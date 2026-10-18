@@ -133,9 +133,13 @@ jobs:
           ccache --zero-stats
           meson setup build --prefix="$HOME" -Dbuildtype=debugoptimized --werror
           meson compile -C build
+          # Upstream integration suites expect installed themes/configuration
+          # and other runtime resources; install before running the suites.
+          meson install -C build
+          export PATH="$HOME/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           meson test -C build --suite unit --print-errorlogs
           meson test -C build --suite integration --print-errorlogs
-          meson install -C build
           ccache --show-stats
       - name: Package runtime for fan-out
         run: |
@@ -273,10 +277,18 @@ jobs:
           if test "$CC" = clang; then
             options="$options -Db_lundef=false"
             export CFLAGS="-fno-sanitize=function"
+            # Built code generators link against the Clang ASan runtime.
+            # Without this, they can fail during Ninja's generation steps.
+            asan_runtime="$(clang -print-file-name=libclang_rt.asan-x86_64.so)"
+            test -f "$asan_runtime"
+            export LD_LIBRARY_PATH="$(dirname "$asan_runtime"):${LD_LIBRARY_PATH:-}"
           fi
           sudo sysctl vm.mmap_rnd_bits=28 || true
-          meson setup build $options
+          meson setup build --prefix="$HOME" $options
           meson compile -C build
+          meson install -C build
+          export PATH="$HOME/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           meson test -C build --suite unit --print-errorlogs
           meson test -C build --suite integration --print-errorlogs
 
@@ -333,12 +345,23 @@ jobs:
           sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev
           python3 -m pip install --user meson ninja PyYAML gcovr
       - name: Build and execute coverage-instrumented tests
+        id: coverage-build
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          meson setup build -Dbuildtype=debug -Db_coverage=true -Dchecks_level=3 --werror
+          meson setup build --prefix="$HOME" -Dbuildtype=debug -Db_coverage=true -Dchecks_level=3 --werror
           meson compile -C build
+          meson install -C build
+          export PATH="$HOME/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           meson test -C build --suite unit --print-errorlogs
           meson test -C build --suite integration --print-errorlogs
+      - name: Generate coverage report even if tests fail
+        if: always()
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          # Generate partial diagnostics when the test suite fails, but
+          # still require non-empty reports and preserve the job failure.
+          test -d build
           gcovr --gcov-ignore-parse-errors=all --txt build/coverage.txt --cobertura build/coverage.xml --merge-mode-functions=separate build
           test -s build/coverage.txt
           test -s build/coverage.xml
