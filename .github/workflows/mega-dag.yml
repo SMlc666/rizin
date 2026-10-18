@@ -1,0 +1,362 @@
+name: Rizin Mega DAG (prototype)
+
+# Isolated experiment: no pull_request or default-branch trigger.
+on:
+  push:
+    branches:
+      - ci/mega-dag-prototype
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mega-dag-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_BREAK_SYSTEM_PACKAGES: "1"
+
+jobs:
+  validate-dag:
+    name: "00 / Validate graph and test inventory"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check dependency graph, inventory and configuration
+        run: |
+          python3 -m pip install --user PyYAML
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          workflow = yaml.safe_load(Path('.github/workflows/mega-dag.yml').read_text())
+          jobs = workflow['jobs']
+          expected = {'abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
+                      'extras', 'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
+          categories = jobs['regression-shards']['strategy']['matrix']['category']
+          assert len(categories) == len(expected) and set(categories) == expected
+          for category in categories:
+              assert (Path('test/db') / category).is_dir(), category
+          state = {}
+          def visit(job):
+              assert job in jobs, f'missing job {job}'
+              if state.get(job) == 'done':
+                  return
+              assert state.get(job) != 'visiting', f'cycle involving {job}'
+              state[job] = 'visiting'
+              deps = jobs[job].get('needs', [])
+              if isinstance(deps, str):
+                  deps = [deps]
+              for dep in deps:
+                  visit(dep)
+              state[job] = 'done'
+          for job in jobs:
+              visit(job)
+          assert 'quality-gate' in jobs
+          print(f'Validated {len(jobs)} logical jobs and {len(categories)} regression categories.')
+          PY
+
+  prepare-fixtures:
+    name: "10 / Package regression fixtures"
+    needs: validate-dag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Checkout test binaries
+        uses: actions/checkout@v6
+        with:
+          repository: rizinorg/rizin-testbins
+          path: test/bins
+          persist-credentials: false
+      - name: Checkout rz-pipe helpers
+        uses: actions/checkout@v6
+        with:
+          repository: rizinorg/rz-pipe
+          path: test/rz-pipe
+          persist-credentials: false
+      - name: Archive reusable fixtures
+        run: |
+          test -d test/bins
+          test -d test/rz-pipe/python
+          tar -C test -czf "$RUNNER_TEMP/rizin-fixtures.tar.gz" bins rz-pipe
+          (cd "$RUNNER_TEMP" && sha256sum rizin-fixtures.tar.gz > rizin-fixtures.tar.gz.sha256)
+          ls -lh "$RUNNER_TEMP/rizin-fixtures.tar.gz"
+      - name: Publish fixture artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rizin-fixtures
+          path: |
+            ${{ runner.temp }}/rizin-fixtures.tar.gz
+            ${{ runner.temp }}/rizin-fixtures.tar.gz.sha256
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+
+  build-gcc:
+    name: "10 / GCC build + Meson suites + runtime artifact"
+    needs: validate-dag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 750M
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev ccache
+          python3 -m pip install --user meson ninja PyYAML
+      - name: Restore GCC compiler objects
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: mega-gcc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('meson.build', 'subprojects/*.wrap') }}-${{ github.sha }}
+          restore-keys: |
+            mega-gcc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('meson.build', 'subprojects/*.wrap') }}-
+      - name: Build and run unit/integration suites
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ccache --max-size=750M
+          ccache --zero-stats
+          meson setup build --prefix="$HOME" -Dbuildtype=debugoptimized --werror
+          meson compile -C build
+          meson test -C build --suite unit --print-errorlogs
+          meson test -C build --suite integration --print-errorlogs
+          meson install -C build
+          ccache --show-stats
+      - name: Package runtime for fan-out
+        run: |
+          set -e
+          paths=(bin lib)
+          if test -d "$HOME/share"; then paths+=(share); fi
+          tar -C "$HOME" -czf "$RUNNER_TEMP/rizin-runtime.tar.gz" "${paths[@]}"
+          (cd "$RUNNER_TEMP" && sha256sum rizin-runtime.tar.gz > rizin-runtime.tar.gz.sha256)
+          test -s "$RUNNER_TEMP/rizin-runtime.tar.gz"
+          ls -lh "$RUNNER_TEMP/rizin-runtime.tar.gz"
+      - name: Publish runtime artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rizin-gcc-runtime
+          path: |
+            ${{ runner.temp }}/rizin-runtime.tar.gz
+            ${{ runner.temp }}/rizin-runtime.tar.gz.sha256
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+
+  cli-smoke:
+    name: "20 / Validate staged CLI runtime"
+    needs: build-gcc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: rizin-gcc-runtime
+          path: ${{ runner.temp }}/runtime
+      - name: Verify and extract runtime
+        run: |
+          (cd "$RUNNER_TEMP/runtime" && sha256sum -c rizin-runtime.tar.gz.sha256)
+          tar -C "$HOME" -xzf "$RUNNER_TEMP/runtime/rizin-runtime.tar.gz"
+      - name: Check installed CLI tools
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:$LD_LIBRARY_PATH"
+          rizin -v
+          rz-test -v
+          rz-asm -v
+          rz-bin -v
+
+  regression-shards:
+    name: "20 / rz-test / ${{ matrix.category }}"
+    needs: [build-gcc, prepare-fixtures]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category:
+          - abi
+          - analysis
+          - archos
+          - asm
+          - cmd
+          - esil
+          - extras
+          - formats
+          - inquiry
+          - io
+          - json
+          - rzil
+          - tools
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libc6-i386 libc6-dev debuginfod gdbserver libcapstone4
+          python3 -m pip install --user psutil requests
+      - uses: actions/download-artifact@v8
+        with:
+          name: rizin-gcc-runtime
+          path: ${{ runner.temp }}/runtime
+      - uses: actions/download-artifact@v8
+        with:
+          name: rizin-fixtures
+          path: ${{ runner.temp }}/fixtures
+      - name: Restore verified runtime and fixtures
+        run: |
+          (cd "$RUNNER_TEMP/runtime" && sha256sum -c rizin-runtime.tar.gz.sha256)
+          (cd "$RUNNER_TEMP/fixtures" && sha256sum -c rizin-fixtures.tar.gz.sha256)
+          tar -C "$HOME" -xzf "$RUNNER_TEMP/runtime/rizin-runtime.tar.gz"
+          tar -C test -xzf "$RUNNER_TEMP/fixtures/rizin-fixtures.tar.gz"
+          python3 -m pip install --user ./test/rz-pipe/python
+      - name: Run regression category
+        run: |
+          export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:$LD_LIBRARY_PATH"
+          export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
+          cd test
+          rz-test -j "$(nproc)" -L -o "results-${{ matrix.category }}.json" "db/${{ matrix.category }}"
+      - name: Persist independent shard result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regression-${{ matrix.category }}
+          path: test/results-${{ matrix.category }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  sanitizer:
+    name: "10 / ${{ matrix.compiler }} ASan+UBSan / Meson suites"
+    needs: validate-dag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev clang
+          python3 -m pip install --user meson ninja PyYAML
+      - name: Build with sanitizers and execute Meson tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0,allocator_may_return_null=1
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          export CC="${{ matrix.compiler }}"
+          options="-Dbuildtype=debugoptimized -Db_sanitize=address,undefined --werror"
+          if test "$CC" = clang; then
+            options="$options -Db_lundef=false"
+            export CFLAGS="-fno-sanitize=function"
+          fi
+          sudo sysctl vm.mmap_rnd_bits=28 || true
+          meson setup build $options
+          meson compile -C build
+          meson test -C build --suite unit --print-errorlogs
+          meson test -C build --suite integration --print-errorlogs
+
+  compatibility:
+    name: "10 / Build compatibility / ${{ matrix.variant }}"
+    needs: validate-dag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: portable
+            meson_options: -Dbuildtype=debug --default-library=static -Dstatic_runtime=true -Dportable=true
+          - variant: no-gpl
+            meson_options: -Dbuildtype=release -Duse_gpl=false
+          - variant: capstone-v6
+            meson_options: -Dbuildtype=release -Duse_capstone_version=v6
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev
+          python3 -m pip install --user meson ninja PyYAML
+      - name: Build compatibility variant
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          meson setup build ${{ matrix.meson_options }} --werror
+          meson compile -C build
+
+  coverage:
+    name: "10 / Coverage build, tests, offline artifact"
+    needs: validate-dag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install coverage toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev
+          python3 -m pip install --user meson ninja PyYAML gcovr
+      - name: Build and execute coverage-instrumented tests
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          meson setup build -Dbuildtype=debug -Db_coverage=true -Dchecks_level=3 --werror
+          meson compile -C build
+          meson test -C build --suite unit --print-errorlogs
+          meson test -C build --suite integration --print-errorlogs
+          gcovr --gcov-ignore-parse-errors=all --txt build/coverage.txt --cobertura build/coverage.xml --merge-mode-functions=separate build
+          test -s build/coverage.txt
+          test -s build/coverage.xml
+          grep -E '^TOTAL' build/coverage.txt || true
+      - name: Persist coverage offline
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mega-dag-coverage
+          path: |
+            build/coverage.txt
+            build/coverage.xml
+          if-no-files-found: error
+          retention-days: 14
+
+  quality-gate:
+    name: "99 / Aggregate all DAG results"
+    if: always()
+    needs:
+      - validate-dag
+      - prepare-fixtures
+      - build-gcc
+      - cli-smoke
+      - regression-shards
+      - sanitizer
+      - compatibility
+      - coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - name: Produce complete gate report (fail closed)
+        run: |
+          {
+            echo '### Mega DAG results'
+            echo '| Logical stage | Result |'
+            echo '| --- | --- |'
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<< "$NEEDS_JSON"
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -e 'all(.[]; .result == "success")' <<< "$NEEDS_JSON" >/dev/null || {
+            echo "One or more stages failed, were cancelled, or were skipped."
+            exit 1
+          }
+          echo 'All required DAG stages completed successfully.'
