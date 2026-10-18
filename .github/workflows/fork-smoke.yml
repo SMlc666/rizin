@@ -1,0 +1,53 @@
+name: Fork smoke CI
+
+# A small, secret-free quality gate for the fork.
+# This workflow never publishes packages or images.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - "ci/**"
+      - "feature/**"
+  pull_request:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-gcc-build-and-unit:
+    name: Linux GCC build and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        env:
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
+        run: |
+          sudo apt-get update
+          sudo apt-get install --assume-yes python3-wheel python3-setuptools libcapstone4 libcapstone-dev
+          python3 -m pip install --user meson ninja PyYAML
+
+      - name: Configure
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          meson setup build -Dbuildtype=debugoptimized --werror
+
+      - name: Compile
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          meson compile -C build
+
+      - name: Run unit tests
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          meson test -C build --suite unit --print-errorlogs
