@@ -105,6 +105,12 @@ jobs:
       CCACHE_MAXSIZE: 750M
     steps:
       - uses: actions/checkout@v6
+      - name: Checkout external binary fixtures for Meson integration
+        uses: actions/checkout@v6
+        with:
+          repository: rizinorg/rizin-testbins
+          path: test/bins
+          persist-credentials: false
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -246,6 +252,12 @@ jobs:
         compiler: [gcc, clang]
     steps:
       - uses: actions/checkout@v6
+      - name: Checkout external binary fixtures for Meson integration
+        uses: actions/checkout@v6
+        with:
+          repository: rizinorg/rizin-testbins
+          path: test/bins
+          persist-credentials: false
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -293,7 +305,13 @@ jobs:
       - name: Build compatibility variant
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          meson setup build ${{ matrix.meson_options }} --werror
+          if test "${{ matrix.variant }}" = portable; then
+            # Static glibc linking emits a warning that --werror escalates.
+            # Match the upstream portable build's non-Werror configuration.
+            meson setup build ${{ matrix.meson_options }}
+          else
+            meson setup build ${{ matrix.meson_options }} --werror
+          fi
           meson compile -C build
 
   coverage:
@@ -303,6 +321,12 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
+      - name: Checkout external binary fixtures for Meson integration
+        uses: actions/checkout@v6
+        with:
+          repository: rizinorg/rizin-testbins
+          path: test/bins
+          persist-credentials: false
       - name: Install coverage toolchain
         run: |
           sudo apt-get update
