@@ -7,8 +7,6 @@ on:
   push:
     branches:
       - dev
-      - "ci/**"
-      - "feature/**"
   pull_request:
     branches:
       - dev
@@ -25,6 +23,10 @@ jobs:
     name: Linux GCC build and unit tests
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+    env:
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 750M
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -34,20 +36,58 @@ jobs:
           PIP_BREAK_SYSTEM_PACKAGES: "1"
         run: |
           sudo apt-get update
-          sudo apt-get install --assume-yes python3-wheel python3-setuptools libcapstone4 libcapstone-dev
+          sudo apt-get install --assume-yes python3-wheel python3-setuptools libcapstone4 libcapstone-dev ccache
           python3 -m pip install --user meson ninja PyYAML
 
+      # Preserve compiler objects across runs, while keeping separate cache
+      # namespaces for OS, architecture, compiler, and build configuration.
+      - name: Restore compiler cache
+        id: compiler-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-gcc-debugoptimized-${{ hashFiles('meson.build', 'subprojects/*.wrap') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-gcc-debugoptimized-${{ hashFiles('meson.build', 'subprojects/*.wrap') }}-
+
+      - name: Initialize compiler cache
+        run: |
+          ccache --max-size=750M
+          ccache --zero-stats
+
       - name: Configure
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           meson setup build -Dbuildtype=debugoptimized --werror
 
       - name: Compile
+        id: compile
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          start=$(date +%s)
           meson compile -C build
+          echo "seconds=$(($(date +%s) - start))" >> "$GITHUB_OUTPUT"
 
       - name: Run unit tests
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           meson test -C build --suite unit --print-errorlogs
+
+      - name: Report compiler cache and timing
+        if: always()
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --show-stats
+            {
+              echo '### GCC compiler cache experiment'
+              echo "Compile duration: ${{ steps.compile.outputs.seconds || 'unavailable' }} seconds"
+              echo "Exact cache key hit: ${{ steps.compiler-cache.outputs.cache-hit || 'none' }}"
+              echo 'Note: a false cache-hit can still mean a restore-keys fallback was used.'
+              echo '```text'
+              ccache --show-stats
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
