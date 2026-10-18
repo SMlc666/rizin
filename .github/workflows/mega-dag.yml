@@ -32,8 +32,10 @@ jobs:
           import yaml
           workflow = yaml.safe_load(Path('.github/workflows/mega-dag.yml').read_text())
           jobs = workflow['jobs']
+          # Extras is explicitly excluded by rz-test's recursive default
+          # loader because it requires additional external dependencies.
           expected = {'abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
-                      'extras', 'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
+                      'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
           categories = jobs['regression-shards']['strategy']['matrix']['category']
           assert len(categories) == len(expected) and set(categories) == expected
           for category in categories:
@@ -80,7 +82,10 @@ jobs:
         run: |
           test -d test/bins
           test -d test/rz-pipe/python
-          tar -C test -czf "$RUNNER_TEMP/rizin-fixtures.tar.gz" bins rz-pipe
+          du -sh test/bins/.git test/rz-pipe/.git || true
+          # VCS history is not a test fixture: exclude it from the fan-out
+          # artifact to avoid multiplying needless bytes across shards.
+          tar --exclude='*/.git' --exclude='*/.git/*' -C test -czf "$RUNNER_TEMP/rizin-fixtures.tar.gz" bins rz-pipe
           (cd "$RUNNER_TEMP" && sha256sum rizin-fixtures.tar.gz > rizin-fixtures.tar.gz.sha256)
           ls -lh "$RUNNER_TEMP/rizin-fixtures.tar.gz"
       - name: Publish fixture artifact
@@ -200,7 +205,6 @@ jobs:
           - asm
           - cmd
           - esil
-          - extras
           - formats
           - inquiry
           - io
@@ -212,7 +216,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libc6-i386 libc6-dev debuginfod gdbserver libcapstone4
+          sudo apt-get install -y libc6-i386 libc6-dev debuginfod gdbserver libcapstone4 jq
           python3 -m pip install --user psutil requests
       - uses: actions/download-artifact@v8
         with:
@@ -235,13 +239,19 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:$LD_LIBRARY_PATH"
           export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
           cd test
+          # rz-test can exit successfully when zero cases were discovered.
+          # Treat an empty shard as a broken CI topology, never a green Job.
+          rz-test -n "db/${{ matrix.category }}" | tee "inventory-${{ matrix.category }}.txt"
+          awk '/^Loaded [0-9]+ tests\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' "inventory-${{ matrix.category }}.txt"
           rz-test -j "$(nproc)" -L -o "results-${{ matrix.category }}.json" "db/${{ matrix.category }}"
       - name: Persist independent shard result
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: regression-${{ matrix.category }}
-          path: test/results-${{ matrix.category }}.json
+          path: |
+            test/results-${{ matrix.category }}.json
+            test/inventory-${{ matrix.category }}.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -377,6 +387,69 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  regression-report:
+    name: "90 / Regression inventory and results audit"
+    if: always()
+    needs: regression-shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Retrieve shard result manifests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: regression-*
+          path: shard-results
+      - name: Audit all required shard JSON reports (fail closed)
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+          root = Path('shard-results')
+          categories = ('abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
+                        'formats', 'inquiry', 'io', 'json', 'rzil', 'tools')
+          lines = ['### Regression shard audit', '',
+                   '| Shard | Cases | OK | Broken (expected) | Failed | Fixed |',
+                   '| --- | ---: | ---: | ---: | ---: | ---: |']
+          errors = []
+          for category in categories:
+              folder = root / f'regression-{category}'
+              report = folder / f'results-{category}.json'
+              inventory = folder / f'inventory-{category}.txt'
+              if not report.is_file() or not inventory.is_file():
+                  errors.append(f'{category}: missing JSON report or inventory')
+                  lines.append(f'| {category} | missing | - | - | - | - |')
+                  continue
+              try:
+                  cases = json.loads(report.read_text())
+                  if not isinstance(cases, list) or not cases:
+                      raise ValueError('empty or non-array test results')
+                  if not any(line.startswith('Loaded ') and
+                             int(line.split()[1]) > 0
+                             for line in inventory.read_text().splitlines()):
+                      raise ValueError('no positive test inventory')
+                  statuses = Counter(x['result'] for x in cases)
+                  unexpected = set(statuses) - {'ok', 'broken', 'failed', 'fixed'}
+                  if unexpected:
+                      raise ValueError(f'unexpected result status: {unexpected}')
+                  lines.append(f'| {category} | {len(cases)} | {statuses["ok"]} | '
+                               f'{statuses["broken"]} | {statuses["failed"]} | '
+                               f'{statuses["fixed"]} |')
+                  if statuses['failed'] or statuses['fixed']:
+                      errors.append(f'{category}: unexpected failed/fixed results')
+              except Exception as exc:
+                  errors.append(f'{category}: {exc}')
+                  lines.append(f'| {category} | invalid | - | - | - | - |')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
+              fh.write('\n'.join(lines) + '\n')
+              if errors:
+                  fh.write('\n**Audit errors:** ' + '; '.join(errors) + '\n')
+          if errors:
+              raise SystemExit('; '.join(errors))
+          print('All 12 standard regression categories have nonempty and valid result reports.')
+          PY
+
   quality-gate:
     name: "99 / Aggregate all DAG results"
     if: always()
@@ -386,6 +459,7 @@ jobs:
       - build-gcc
       - cli-smoke
       - regression-shards
+      - regression-report
       - sanitizer
       - compatibility
       - coverage
