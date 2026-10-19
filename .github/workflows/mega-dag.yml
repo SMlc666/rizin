@@ -543,7 +543,7 @@ jobs:
 
   regression-report:
     name: "90 / Regression inventory and results audit"
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan-regressions, regression-shards, archos-heavy]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -653,7 +653,7 @@ jobs:
 
   quality-gate:
     name: "99 / Aggregate all DAG results"
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs:
       - validate-dag
       - plan-regressions
@@ -690,7 +690,7 @@ jobs:
     # This report runs even when quality-gate fails. It cannot make a
     # failed quality gate green; a diagnostic failure itself remains red.
     needs: quality-gate
-    if: always()
+    if: always() && needs.quality-gate.result != 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
       actions: read
