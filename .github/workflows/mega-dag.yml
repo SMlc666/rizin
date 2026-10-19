@@ -260,6 +260,10 @@ jobs:
     needs: validate-dag
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+    env:
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 750M
     strategy:
       fail-fast: false
       matrix:
@@ -275,16 +279,30 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev clang
+          sudo apt-get install -y python3-wheel python3-setuptools libcapstone4 libcapstone-dev clang ccache
           python3 -m pip install --user meson ninja PyYAML
+      - name: Restore ${{ matrix.compiler }} sanitizer compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: mega-sanitize-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-asan-ubsan-${{ hashFiles('meson.build', 'subprojects/*.wrap') }}-${{ github.sha }}
+          restore-keys: |
+            mega-sanitize-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-asan-ubsan-${{ hashFiles('meson.build', 'subprojects/*.wrap') }}-
       - name: Build with sanitizers and execute Meson tests
         env:
           ASAN_OPTIONS: detect_leaks=0,allocator_may_return_null=1
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          export CC="${{ matrix.compiler }}"
+          ccache --max-size=750M
+          ccache --zero-stats
+          export CC="ccache ${{ matrix.compiler }}"
+          if test "${{ matrix.compiler }}" = clang; then
+            export CXX="ccache clang++"
+          else
+            export CXX="ccache g++"
+          fi
           options="-Dbuildtype=debugoptimized -Db_sanitize=address,undefined --werror"
-          if test "$CC" = clang; then
+          if test "${{ matrix.compiler }}" = clang; then
             options="$options -Db_lundef=false"
             export CFLAGS="-fno-sanitize=function"
             # Built code generators link against the Clang ASan runtime.
@@ -301,6 +319,18 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           meson test -C build --suite unit --print-errorlogs
           meson test -C build --suite integration --print-errorlogs
+      - name: Report ${{ matrix.compiler }} sanitizer compiler-cache performance
+        if: always()
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --show-stats
+            {
+              echo '### ${{ matrix.compiler }} ASan/UBSan compiler-cache report'
+              echo '```text'
+              ccache --show-stats
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   compatibility:
     name: "10 / Build compatibility / ${{ matrix.variant }}"
@@ -413,6 +443,8 @@ jobs:
                    '| Shard | Cases | OK | Broken (expected) | Failed | Fixed |',
                    '| --- | ---: | ---: | ---: | ---: | ---: |']
           errors = []
+          fixed_total = 0
+          total_cases = 0
           for category in categories:
               folder = root / f'regression-{category}'
               report = folder / f'results-{category}.json'
@@ -436,13 +468,23 @@ jobs:
                   lines.append(f'| {category} | {len(cases)} | {statuses["ok"]} | '
                                f'{statuses["broken"]} | {statuses["failed"]} | '
                                f'{statuses["fixed"]} |')
-                  if statuses['failed'] or statuses['fixed']:
-                      errors.append(f'{category}: unexpected failed/fixed results')
+                  total_cases += len(cases)
+                  fixed_total += statuses['fixed']
+                  # rz-test itself treats 'fixed' as a successful result:
+                  # an expected-broken case now passes. Signal it for
+                  # maintainers without contradicting rz-test's exit code.
+                  if statuses['fixed']:
+                      print(f'::warning title=Expected-broken tests now pass::{category}: '
+                            f'{statuses["fixed"]} fixed cases need baseline review')
+                  if statuses['failed']:
+                      errors.append(f'{category}: {statuses["failed"]} unexpected failures')
               except Exception as exc:
                   errors.append(f'{category}: {exc}')
                   lines.append(f'| {category} | invalid | - | - | - | - |')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
               fh.write('\n'.join(lines) + '\n')
+              fh.write(f'\n**Audited cases:** {total_cases}; '
+                       f'**expected-broken cases now passing (warning):** {fixed_total}.\n')
               if errors:
                   fh.write('\n**Audit errors:** ' + '; '.join(errors) + '\n')
           if errors:
