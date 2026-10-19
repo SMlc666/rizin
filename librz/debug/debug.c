@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #include <rz_debug.h>
+#define RZ_CI_PROFILE_MODULE "debug"
+#include "ci_phase_profile.h"
 #include <rz_drx.h>
 #include <rz_core.h>
 #include <rz_windows.h>
@@ -996,23 +998,31 @@ RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
 			dbg->session->cnum++;
 			dbg->session->maxcnum++;
 			dbg->session->bp = 0;
-			if (!rz_debug_trace_ins_before(dbg)) {
+			uint64_t before_ns = rz_ci_phase_begin();
+			bool before_ok = rz_debug_trace_ins_before(dbg);
+			rz_ci_phase_end(0, "trace_ins_before", before_ns);
+			if (!before_ok) {
 				RZ_LOG_ERROR("debug: trace insert before has failed\n");
 			}
 		}
 
+		uint64_t step_ns = rz_ci_phase_begin();
 		if (dbg->swstep) {
 			ret = rz_debug_step_soft(dbg);
 		} else {
 			ret = rz_debug_step_hard(dbg, &bp);
 		}
+		rz_ci_phase_end(1, "step_backend", step_ns);
 		if (!ret) {
 			RZ_LOG_ERROR("debug: failed to step\n");
 			return steps_taken;
 		}
 
 		if (dbg->session && dbg->recoil_mode == RZ_DBG_RECOIL_NONE) {
-			if (!rz_debug_trace_ins_after(dbg)) {
+			uint64_t after_ns = rz_ci_phase_begin();
+			bool after_ok = rz_debug_trace_ins_after(dbg);
+			rz_ci_phase_end(2, "trace_ins_after", after_ns);
+			if (!after_ok) {
 				RZ_LOG_ERROR("debug: trace insert after has failed\n");
 			}
 			dbg->session->reasontype = dbg->reason.type;
@@ -1125,7 +1135,9 @@ RZ_API bool rz_debug_goto_cnum(RzDebug *dbg, ut32 cnum) {
 		return false;
 	}
 	dbg->session->cnum = cnum;
+	uint64_t restore_ns = rz_ci_phase_begin();
 	rz_debug_session_restore_reg_mem(dbg, cnum);
+	rz_ci_phase_end(3, "goto_cnum_restore", restore_ns);
 
 	return true;
 }
@@ -1476,6 +1488,7 @@ RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
 		return false;
 	}
 	RzDebugChangeReg *reg;
+	uint64_t scan_ns = rz_ci_phase_begin();
 	rz_vector_foreach_prev (vreg, reg) {
 		if (reg->cnum >= dbg->session->cnum) {
 			continue;
@@ -1488,6 +1501,7 @@ RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
 		}
 	}
 
+	rz_ci_phase_end(4, "continue_back_breakpoint_scan", scan_ns);
 	if (has_bp) {
 		rz_debug_goto_cnum(dbg, cnum);
 	} else {
