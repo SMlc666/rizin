@@ -3,6 +3,9 @@
 
 #include <rz_debug.h>
 #include <rz_util/rz_json.h>
+#define RZ_CI_PROFILE_UNIT "session"
+#define RZ_CI_PROFILE_NAMES { "register_restore", "memory_restore", "byte_writes" }
+#include "ci_profile.h"
 
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_MEM(x, y)   ((x) >= ((RzDebugChangeMem *)y)->cnum ? 1 : -1)
@@ -150,6 +153,7 @@ static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
 		RzDebugChangeMem *mem = rz_vector_index_ptr(vmem, index - 1);
 		if (mem->cnum > dbg->session->cur_chkpt->cnum) {
 			dbg->iob.write_at(dbg->iob.io, key, &mem->data, 1);
+			rz_ci_profile_count(2);
 		}
 	}
 	return true;
@@ -174,12 +178,15 @@ RZ_API void rz_debug_session_restore_reg_mem(RzDebug *dbg, ut32 cnum) {
 	// Set checkpoint for initial registers and memory
 	dbg->session->cur_chkpt = _get_checkpoint_before(dbg->session, cnum);
 
-	// Restore registers
+	// These timings are enabled only for the opt-in CI diagnostic process.
+	ut64 register_start = rz_ci_profile_start();
 	_restore_registers(dbg, cnum);
 	rz_debug_reg_sync(dbg, RZ_REG_TYPE_ANY, true);
+	rz_ci_profile_end(0, register_start);
 
-	// Restore memory
+	ut64 memory_start = rz_ci_profile_start();
 	_restore_memory(dbg, cnum);
+	rz_ci_profile_end(1, memory_start);
 }
 
 RZ_API void rz_debug_session_list_memory(RzDebug *dbg) {
