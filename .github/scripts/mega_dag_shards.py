@@ -80,10 +80,13 @@ def build_plan(db_root: Path, history: dict, asm_groups: int = 4) -> tuple[dict,
          "exclude": [heavy] if name == "archos" else []}
         for name in CATEGORIES if name != "asm"
     ]
-    include.append({"name": "archos-heavy", "category": "archos",
-                    "paths": [heavy], "exclude": []})
-    names = [entry["name"] for entry in include]
-    if len(set(names)) != len(names) or len(include) != (asm_groups + len(CATEGORIES)):
+    # Keep this slow debugger regression outside the matrix concurrency cap.
+    # Its standalone job uses the same source path and exports the same
+    # result artifact that the regression audit previously expected.
+    dedicated = {"name": "archos-heavy", "category": "archos",
+                 "paths": [heavy], "exclude": []}
+    names = [entry["name"] for entry in include] + [dedicated["name"]]
+    if len(set(names)) != len(names) or len(include) != (asm_groups + len(CATEGORIES) - 1):
         raise ValueError("Invalid expanded matrix")
     matrix = {"include": include}
     manifest = {
@@ -95,6 +98,7 @@ def build_plan(db_root: Path, history: dict, asm_groups: int = 4) -> tuple[dict,
         "stale_historical_files": sorted(set(weights) - set(asm_names)),
         "predicted_asm_shard_seconds": [round(v / 1_000_000, 3) for v in loads],
         "isolated_archos_file": heavy,
+        "standalone": dedicated,
         "matrix": matrix,
     }
     return matrix, manifest
@@ -121,8 +125,10 @@ def self_test() -> None:
         assert all(x["paths"] for x in matrix["include"])
         assert next(x for x in matrix["include"] if x["name"] == "archos")["exclude"] == [
             "db/archos/linux-x64/dbg_cont_back"]
-        assert next(x for x in matrix["include"] if x["name"] == "archos-heavy")["paths"] == [
+        assert all(x["name"] != "archos-heavy" for x in matrix["include"])
+        assert manifest["standalone"]["paths"] == [
             "db/archos/linux-x64/dbg_cont_back"]
+        assert manifest["standalone"]["exclude"] == []
         assert build_plan(db, history, 4)[0] == matrix
         # A newly added file must be included automatically.
         (db / "asm" / "f").write_text("test\n")
@@ -170,7 +176,8 @@ def main() -> None:
     print("ASM shards (historic summed test CPU-seconds):",
           manifest["predicted_asm_shard_seconds"])
     print("Isolated slow debugger test file:", manifest["isolated_archos_file"])
-    print("Expanded GitHub Actions jobs:", len(matrix["include"]))
+    print("Matrix jobs:", len(matrix["include"]),
+          "+1 dedicated archos-heavy job outside matrix capacity")
 
 
 if __name__ == "__main__":
