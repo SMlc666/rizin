@@ -15,6 +15,10 @@
 #error "Define RZ_CI_PROFILE_MODULE before including ci_phase_profile.h"
 #endif
 
+#if defined(__linux__)
+#include <time.h>
+#include <unistd.h>
+
 #define RZ_CI_PROFILE_MAX_PHASES 12
 
 typedef struct {
@@ -28,13 +32,8 @@ typedef struct {
 static RzCiPhaseEntry rz_ci_phase_entries[RZ_CI_PROFILE_MAX_PHASES];
 static int rz_ci_phase_enabled = -1;
 
-#if defined(__linux__)
-#include <unistd.h>
-#endif
-
 static void rz_ci_phase_report(void) {
 	FILE *output = stderr;
-#if defined(__linux__)
 	const char *dir = getenv("RZ_CI_DEBUG_PROFILE_DIR");
 	if (dir && *dir) {
 		char path[4096];
@@ -47,7 +46,6 @@ static void rz_ci_phase_report(void) {
 			}
 		}
 	}
-#endif
 	for (size_t i = 0; i < RZ_CI_PROFILE_MAX_PHASES; ++i) {
 		RzCiPhaseEntry *entry = &rz_ci_phase_entries[i];
 		if (!entry->name) {
@@ -74,9 +72,6 @@ static int rz_ci_phase_is_enabled(void) {
 	}
 	return rz_ci_phase_enabled;
 }
-
-#if defined(__linux__)
-#include <time.h>
 
 static inline uint64_t rz_ci_phase_now(void) {
 	struct timespec clock_value;
