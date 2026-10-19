@@ -3,6 +3,21 @@
 
 #include <rz_debug.h>
 #include <rz_util/rz_json.h>
+#include "ci_debug_profile.h"
+
+enum { CI_RESTORE_REGISTERS, CI_SYNC_REGISTERS, CI_RESTORE_SNAPSHOTS, CI_RESTORE_CHANGES };
+static RzCiDebugProfileBucket ci_session_buckets[] = {
+	{ "restore_registers", 0, 0, 0 },
+	{ "sync_registers", 0, 0, 0 },
+	{ "restore_snapshot_memory", 0, 0, 0 },
+	{ "restore_memory_changes", 0, 0, 0 },
+};
+static RzCiDebugProfile ci_session_profiler = { -1, "dsession", ci_session_buckets, 4 };
+static void ci_session_profile_dump(void) {
+	rz_ci_debug_profile_dump(&ci_session_profiler);
+}
+#define CI_SESSION_START() rz_ci_debug_profile_start(&ci_session_profiler, ci_session_profile_dump)
+#define CI_SESSION_END(bucket, start) rz_ci_debug_profile_end(&ci_session_profiler, bucket, start)
 
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_MEM(x, y)   ((x) >= ((RzDebugChangeMem *)y)->cnum ? 1 : -1)
@@ -156,8 +171,12 @@ static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
 }
 
 static void _restore_memory(RzDebug *dbg, ut32 cnum) {
+	uint64_t ci_snapshot = CI_SESSION_START();
 	_set_initial_memory(dbg);
+	CI_SESSION_END(CI_RESTORE_SNAPSHOTS, ci_snapshot);
+	uint64_t ci_changes = CI_SESSION_START();
 	ht_up_foreach(dbg->session->memory, _restore_memory_cb, dbg);
+	CI_SESSION_END(CI_RESTORE_CHANGES, ci_changes);
 }
 
 static RzDebugCheckpoint *_get_checkpoint_before(RzDebugSession *session, ut32 cnum) {
@@ -174,9 +193,14 @@ RZ_API void rz_debug_session_restore_reg_mem(RzDebug *dbg, ut32 cnum) {
 	// Set checkpoint for initial registers and memory
 	dbg->session->cur_chkpt = _get_checkpoint_before(dbg->session, cnum);
 
-	// Restore registers
+	// Record a low-overhead breakdown of state restoration only when
+	// RZ_CI_DEBUG_PROFILE_PATH is explicitly provided by the CI runner.
+	uint64_t ci_reg = CI_SESSION_START();
 	_restore_registers(dbg, cnum);
+	CI_SESSION_END(CI_RESTORE_REGISTERS, ci_reg);
+	uint64_t ci_sync = CI_SESSION_START();
 	rz_debug_reg_sync(dbg, RZ_REG_TYPE_ANY, true);
+	CI_SESSION_END(CI_SYNC_REGISTERS, ci_sync);
 
 	// Restore memory
 	_restore_memory(dbg, cnum);
