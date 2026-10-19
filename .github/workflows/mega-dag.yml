@@ -1,6 +1,6 @@
 name: Rizin Mega DAG (prototype)
 
-# Isolated experiment: no pull_request or default-branch trigger.
+# Experimental DAG. Production dev branch is not targeted by this PR.
 on:
   push:
     branches:
@@ -15,6 +15,7 @@ on:
   pull_request:
     branches:
       - ci/mega-dag-heavy-fastlane
+      - ci/mega-dag-pr-cache-inheritance
 
 permissions:
   contents: read
@@ -78,6 +79,7 @@ jobs:
           PY
           python3 .github/scripts/mega_dag_shards.py --self-test
           python3 .github/scripts/ci_process_sampler.py --self-test
+          python3 .github/scripts/ci_debug_phase_report.py --self-test
           python3 -m pip install --user PyYAML
           python3 .github/scripts/ci_critical_path.py --self-test
 
@@ -348,11 +350,15 @@ jobs:
           tar -C test -xzf "$RUNNER_TEMP/fixtures/rizin-fixtures.tar.gz"
           python3 -m pip install --user ./test/rz-pipe/python
       - name: Run and profile heavy debugger tests
+        env:
+          RZ_CI_DEBUG_PROFILE: "1"
+          RZ_CI_DEBUG_PROFILE_DIR: ${{ github.workspace }}/test/ci-debug-profile
         run: |
           export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
           export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
           cd test
+          mkdir -p ci-debug-profile
           heavy="db/archos/linux-x64/dbg_cont_back"
           test -f "$heavy"
           rz-test -n "$heavy" | tee inventory-archos-heavy.txt
@@ -376,6 +382,25 @@ jobs:
         with:
           name: debugger-process-diagnostics
           path: test/diagnostics-archos-heavy.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Validate and summarize debugger function phases
+        if: always()
+        run: |
+          python3 .github/scripts/ci_debug_phase_report.py \
+            --input test/ci-debug-profile \
+            --json debug-function-phases.json \
+            --markdown debug-function-phases.md
+          cat debug-function-phases.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist independent function-level profile artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debugger-function-phases
+          path: |
+            test/ci-debug-profile/*.txt
+            debug-function-phases.json
+            debug-function-phases.md
           if-no-files-found: error
           retention-days: 14
 
