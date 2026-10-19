@@ -8,6 +8,7 @@ on:
       - ci/mega-dag-balanced-asm
       - ci/mega-dag-lean-fixtures
       - ci/mega-dag-observability
+      - ci/mega-dag-heavy-fastlane
   workflow_dispatch:
 
 permissions:
@@ -44,6 +45,9 @@ jobs:
           assert 'plan-regressions' in jobs
           assert 'plan-regressions' in jobs['regression-shards']['needs']
           assert 'plan-regressions' in jobs['regression-report']['needs']
+          assert 'archos-heavy' in jobs['regression-report']['needs']
+          assert 'archos-heavy' in jobs['quality-gate']['needs']
+          assert set(jobs['archos-heavy']['needs']) == {'build-gcc', 'prepare-fixtures'}
           assert Path('.github/ci/asm-duration-weights.json').is_file()
           assert Path('.github/scripts/mega_dag_shards.py').is_file()
           state = {}
@@ -290,15 +294,7 @@ jobs:
           for path in "${shard_excludes[@]}"; do exclude_args+=(-e "$path"); done
           rz-test -n "${exclude_args[@]}" "${shard_paths[@]}" | tee "inventory-${SHARD_NAME}.txt"
           awk '/^Loaded [0-9]+ tests\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' "inventory-${SHARD_NAME}.txt"
-          if [ "$SHARD_NAME" = "archos-heavy" ]; then
-            # Observe CPU/RSS/process states without ptrace (which would
-            # interfere with Rizin's own debugger). Exit code is preserved.
-            python3 ../.github/scripts/ci_process_sampler.py \
-              --output "diagnostics-${SHARD_NAME}.json" --interval 5 -- \
-              rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
-          else
-            rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
-          fi
+          rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
       - name: Persist independent shard result
         if: always()
         uses: actions/upload-artifact@v7
@@ -309,8 +305,61 @@ jobs:
             test/inventory-${{ matrix.name }}.txt
           if-no-files-found: error
           retention-days: 7
+  archos-heavy:
+    name: "20 / Dedicated archos-heavy debugger regression"
+    # Independent of the 12-way regression matrix concurrency limit.
+    needs: [build-gcc, prepare-fixtures]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libc6-i386 libc6-dev debuginfod gdbserver libcapstone4 jq
+          python3 -m pip install --user psutil requests
+      - name: Download verified GCC runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: rizin-gcc-runtime
+          path: ${{ runner.temp }}/runtime
+      - name: Download verified external fixtures
+        uses: actions/download-artifact@v8
+        with:
+          name: rizin-fixtures
+          path: ${{ runner.temp }}/fixtures
+      - name: Restore runtime and external fixtures
+        run: |
+          (cd "$RUNNER_TEMP/runtime" && sha256sum -c rizin-runtime.tar.gz.sha256)
+          (cd "$RUNNER_TEMP/fixtures" && sha256sum -c rizin-fixtures.tar.gz.sha256)
+          tar -C "$HOME" -xzf "$RUNNER_TEMP/runtime/rizin-runtime.tar.gz"
+          tar -C test -xzf "$RUNNER_TEMP/fixtures/rizin-fixtures.tar.gz"
+          python3 -m pip install --user ./test/rz-pipe/python
+      - name: Run and profile heavy debugger tests
+        run: |
+          export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
+          export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
+          cd test
+          heavy="db/archos/linux-x64/dbg_cont_back"
+          test -f "$heavy"
+          rz-test -n "$heavy" | tee inventory-archos-heavy.txt
+          awk '/^Loaded [0-9]+ tests\\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' inventory-archos-heavy.txt
+          python3 ../.github/scripts/ci_process_sampler.py \
+            --output diagnostics-archos-heavy.json --interval 5 -- \
+            rz-test -j "$(nproc)" -L -o results-archos-heavy.json "$heavy"
+      - name: Persist heavy shard result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regression-archos-heavy
+          path: |
+            test/results-archos-heavy.json
+            test/inventory-archos-heavy.txt
+          if-no-files-found: error
+          retention-days: 7
       - name: Persist heavy debugger process profile
-        if: always() && matrix.name == 'archos-heavy'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: debugger-process-diagnostics
@@ -483,7 +532,7 @@ jobs:
   regression-report:
     name: "90 / Regression inventory and results audit"
     if: always()
-    needs: [plan-regressions, regression-shards]
+    needs: [plan-regressions, regression-shards, archos-heavy]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -506,16 +555,22 @@ jobs:
           from pathlib import Path
 
           manifest = json.loads(Path('shard-plan/shard-plan.json').read_text())
-          planned = manifest['matrix']['include']
+          matrix_shards = manifest['matrix']['include']
+          standalone = manifest['standalone']
+          planned = matrix_shards + [standalone]
           names = [s['name'] for s in planned]
           categories = {'abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
                         'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
+          assert len(matrix_shards) == 15
           assert len(names) == 16 and len(names) == len(set(names))
           assert {s['category'] for s in planned} == categories
           heavy = manifest['isolated_archos_file']
           assert heavy == 'db/archos/linux-x64/dbg_cont_back'
           assert next(x for x in planned if x['name'] == 'archos')['exclude'] == [heavy]
-          assert next(x for x in planned if x['name'] == 'archos-heavy')['paths'] == [heavy]
+          assert all(x['name'] != 'archos-heavy' for x in matrix_shards)
+          assert standalone['name'] == 'archos-heavy'
+          assert standalone['paths'] == [heavy]
+          assert standalone['exclude'] == []
           assert all(not x['exclude'] for x in planned
                      if x['name'] not in {'archos', 'archos-heavy'})
           asm = [path for s in planned if s['category'] == 'asm'
@@ -594,6 +649,7 @@ jobs:
       - build-gcc
       - cli-smoke
       - regression-shards
+      - archos-heavy
       - regression-report
       - sanitizer
       - compatibility
