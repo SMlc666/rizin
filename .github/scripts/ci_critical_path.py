@@ -162,7 +162,7 @@ def self_test():
     assert report["gate_observed_wall_s"] == 99
     assert [v["stage"] for v in report["chain"]] == [
         "validate-dag", "build-gcc", "archos-heavy", "quality-gate"]
-    assert report["chain"][-2]["name"].endswith("archos-heavy")
+    assert report["chain"][-2]["stage"] == "archos-heavy"
     assert "99.0s" in markdown
     print("Critical-path reporter self-test passed")
 
