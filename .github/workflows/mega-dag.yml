@@ -15,6 +15,7 @@ on:
   pull_request:
     branches:
       - ci/mega-dag-heavy-fastlane
+      - ci/mega-dag-pr-cache-inheritance
 
 permissions:
   contents: read
@@ -80,6 +81,7 @@ jobs:
           python3 .github/scripts/ci_process_sampler.py --self-test
           python3 -m pip install --user PyYAML
           python3 .github/scripts/ci_critical_path.py --self-test
+          python3 .github/scripts/ci_debug_profile_report.py --self-test
 
   plan-regressions:
     name: "05 / Plan historical-duration regression DAG"
@@ -352,6 +354,8 @@ jobs:
           export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
           export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
+          export RZ_DEBUG_PROFILE_DIR="$RUNNER_TEMP/rizin-hotspots"
+          mkdir -p "$RZ_DEBUG_PROFILE_DIR"
           cd test
           heavy="db/archos/linux-x64/dbg_cont_back"
           test -f "$heavy"
@@ -360,6 +364,22 @@ jobs:
           python3 ../.github/scripts/ci_process_sampler.py \
             --output diagnostics-archos-heavy.json --interval 5 -- \
             rz-test -j "$(nproc)" -L -o results-archos-heavy.json "$heavy"
+      - name: Validate and summarize function-level instrumentation
+        if: always()
+        run: |
+          python3 .github/scripts/ci_debug_profile_report.py \
+            --root "$RUNNER_TEMP/rizin-hotspots" \
+            --output "$RUNNER_TEMP/rizin-hotspots/summary.json" \
+            --summary "$RUNNER_TEMP/rizin-hotspots/summary.md"
+          cat "$RUNNER_TEMP/rizin-hotspots/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist debugger hotpath records
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debugger-function-profiles
+          path: ${{ runner.temp }}/rizin-hotspots/
+          if-no-files-found: error
+          retention-days: 14
       - name: Persist heavy shard result
         if: always()
         uses: actions/upload-artifact@v7
