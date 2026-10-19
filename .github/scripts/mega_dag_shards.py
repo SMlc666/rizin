@@ -67,12 +67,23 @@ def build_plan(db_root: Path, history: dict, asm_groups: int = 4) -> tuple[dict,
          "paths": [f"db/asm/{name}" for name in group]}
         for i, group in enumerate(groups)
     ]
+    # Linux x86_64 debugger reverse-execution tests are very slow.
+    # rz-test -e PATH excludes every test in that exact source file,
+    # while the dedicated node runs that same file without exclusions.
+    # The normal archos loader still filters irrelevant OS/architecture
+    # subtrees automatically (unlike enumerating their files directly).
+    heavy = "db/archos/linux-x64/dbg_cont_back"
+    if not (db_root / "archos" / "linux-x64" / "dbg_cont_back").is_file():
+        raise ValueError(f"Missing required heavy archos test: {heavy}")
     include += [
-        {"name": name, "category": name, "paths": [f"db/{name}"]}
+        {"name": name, "category": name, "paths": [f"db/{name}"],
+         "exclude": [heavy] if name == "archos" else []}
         for name in CATEGORIES if name != "asm"
     ]
+    include.append({"name": "archos-heavy", "category": "archos",
+                    "paths": [heavy], "exclude": []})
     names = [entry["name"] for entry in include]
-    if len(set(names)) != len(names) or len(include) != (asm_groups + len(CATEGORIES) - 1):
+    if len(set(names)) != len(names) or len(include) != (asm_groups + len(CATEGORIES)):
         raise ValueError("Invalid expanded matrix")
     matrix = {"include": include}
     manifest = {
@@ -83,6 +94,7 @@ def build_plan(db_root: Path, history: dict, asm_groups: int = 4) -> tuple[dict,
         "unknown_asm_files": unknown,
         "stale_historical_files": sorted(set(weights) - set(asm_names)),
         "predicted_asm_shard_seconds": [round(v / 1_000_000, 3) for v in loads],
+        "isolated_archos_file": heavy,
         "matrix": matrix,
     }
     return matrix, manifest
@@ -93,6 +105,8 @@ def self_test() -> None:
         db = Path(root)
         for category in CATEGORIES:
             (db / category).mkdir()
+        (db / "archos" / "linux-x64").mkdir()
+        (db / "archos" / "linux-x64" / "dbg_cont_back").write_text("test\n")
         names = ["a", "b", "c", "d", "e"]
         for name in names:
             (db / "asm" / name).write_text("test\n")
@@ -105,6 +119,10 @@ def self_test() -> None:
         assert flattened == [f"db/asm/{n}" for n in names]
         assert manifest["unknown_asm_files"] == ["e"]
         assert all(x["paths"] for x in matrix["include"])
+        assert next(x for x in matrix["include"] if x["name"] == "archos")["exclude"] == [
+            "db/archos/linux-x64/dbg_cont_back"]
+        assert next(x for x in matrix["include"] if x["name"] == "archos-heavy")["paths"] == [
+            "db/archos/linux-x64/dbg_cont_back"]
         assert build_plan(db, history, 4)[0] == matrix
         # A newly added file must be included automatically.
         (db / "asm" / "f").write_text("test\n")
@@ -151,6 +169,7 @@ def main() -> None:
               ", ".join(manifest["stale_historical_files"]))
     print("ASM shards (historic summed test CPU-seconds):",
           manifest["predicted_asm_shard_seconds"])
+    print("Isolated slow debugger test file:", manifest["isolated_archos_file"])
     print("Expanded GitHub Actions jobs:", len(matrix["include"]))
 
 
