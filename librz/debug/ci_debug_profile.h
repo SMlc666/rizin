@@ -107,7 +107,11 @@ static inline void rz_ci_debug_profile_dump(RzCiDebugProfile *p) {
 			__atomic_load_n(&b->total_ns, __ATOMIC_RELAXED),
 			__atomic_load_n(&b->max_ns, __ATOMIC_RELAXED));
 		if (n > 0 && (size_t)n < sizeof(line)) {
-			(void)write(fd, line, (size_t)n);
+			ssize_t written = write(fd, line, (size_t)n);
+			if (written < 0 || written != n) {
+				// This optional report must never alter debugger behavior.
+				break;
+			}
 		}
 	}
 	close(fd);
