@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #include <rz_debug.h>
+#define RZ_CI_PROFILE_MODULE "session"
+#include "ci_phase_profile.h"
 #include <rz_util/rz_json.h>
 
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
@@ -136,6 +138,7 @@ static void _set_initial_memory(RzDebug *dbg) {
 	RzListIter *iter;
 	RzDebugSnap *snap;
 	rz_list_foreach (dbg->session->cur_chkpt->snaps, iter, snap) {
+		rz_ci_phase_count(6, "snapshot_bytes_written", snap->size);
 		dbg->iob.write_at(dbg->iob.io, snap->addr, snap->data, snap->size);
 	}
 }
@@ -144,11 +147,13 @@ static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
 	size_t index;
 	RzDebug *dbg = user;
 	RzVector *vmem = (RzVector *)value;
+	rz_ci_phase_count(8, "memory_history_keys_visited", 1);
 
 	rz_vector_upper_bound(vmem, dbg->session->cnum, index, CMP_CNUM_MEM);
 	if (index > 0 && index <= vmem->len) {
 		RzDebugChangeMem *mem = rz_vector_index_ptr(vmem, index - 1);
 		if (mem->cnum > dbg->session->cur_chkpt->cnum) {
+			rz_ci_phase_count(7, "replayed_single_byte_writes", 1);
 			dbg->iob.write_at(dbg->iob.io, key, &mem->data, 1);
 		}
 	}
@@ -156,8 +161,13 @@ static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
 }
 
 static void _restore_memory(RzDebug *dbg, ut32 cnum) {
+	uint64_t snapshot_ns = rz_ci_phase_begin();
 	_set_initial_memory(dbg);
+	rz_ci_phase_end(3, "snapshot_memory_restore", snapshot_ns);
+
+	uint64_t replay_ns = rz_ci_phase_begin();
 	ht_up_foreach(dbg->session->memory, _restore_memory_cb, dbg);
+	rz_ci_phase_end(4, "changed_memory_replay", replay_ns);
 }
 
 static RzDebugCheckpoint *_get_checkpoint_before(RzDebugSession *session, ut32 cnum) {
@@ -175,11 +185,18 @@ RZ_API void rz_debug_session_restore_reg_mem(RzDebug *dbg, ut32 cnum) {
 	dbg->session->cur_chkpt = _get_checkpoint_before(dbg->session, cnum);
 
 	// Restore registers
+	uint64_t registers_ns = rz_ci_phase_begin();
 	_restore_registers(dbg, cnum);
+	rz_ci_phase_end(0, "registers_restore", registers_ns);
+
+	uint64_t register_sync_ns = rz_ci_phase_begin();
 	rz_debug_reg_sync(dbg, RZ_REG_TYPE_ANY, true);
+	rz_ci_phase_end(1, "registers_sync", register_sync_ns);
 
 	// Restore memory
+	uint64_t memory_ns = rz_ci_phase_begin();
 	_restore_memory(dbg, cnum);
+	rz_ci_phase_end(2, "memory_restore_total", memory_ns);
 }
 
 RZ_API void rz_debug_session_list_memory(RzDebug *dbg) {
