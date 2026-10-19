@@ -64,7 +64,7 @@ def build_plan(db_root: Path, history: dict, asm_groups: int = 4) -> tuple[dict,
 
     include = [
         {"name": f"asm-{i}", "category": "asm",
-         "paths": [f"db/asm/{name}" for name in group]}
+         "paths": [f"db/asm/{name}" for name in group], "exclude": []}
         for i, group in enumerate(groups)
     ]
     # Linux x86_64 debugger reverse-execution tests are very slow.
