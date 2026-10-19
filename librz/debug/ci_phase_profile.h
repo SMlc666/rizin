@@ -28,17 +28,39 @@ typedef struct {
 static RzCiPhaseEntry rz_ci_phase_entries[RZ_CI_PROFILE_MAX_PHASES];
 static int rz_ci_phase_enabled = -1;
 
+#if defined(__linux__)
+#include <unistd.h>
+#endif
+
 static void rz_ci_phase_report(void) {
+	FILE *output = stderr;
+#if defined(__linux__)
+	const char *dir = getenv("RZ_CI_DEBUG_PROFILE_DIR");
+	if (dir && *dir) {
+		char path[4096];
+		int length = snprintf(path, sizeof(path), "%s/rizin-%ld-%s.txt",
+			dir, (long)getpid(), RZ_CI_PROFILE_MODULE);
+		if (length > 0 && (size_t)length < sizeof(path)) {
+			FILE *profile_file = fopen(path, "w");
+			if (profile_file) {
+				output = profile_file;
+			}
+		}
+	}
+#endif
 	for (size_t i = 0; i < RZ_CI_PROFILE_MAX_PHASES; ++i) {
 		RzCiPhaseEntry *entry = &rz_ci_phase_entries[i];
 		if (!entry->name) {
 			continue;
 		}
-		fprintf(stderr,
+		fprintf(output,
 			"RZ_CI_PROFILE module=%s phase=%s calls=%llu total_us=%llu max_us=%llu events=%llu\n",
 			RZ_CI_PROFILE_MODULE, entry->name, entry->calls,
 			(unsigned long long)(entry->total_ns / 1000),
 			(unsigned long long)(entry->max_ns / 1000), entry->events);
+	}
+	if (output != stderr) {
+		fclose(output);
 	}
 }
 
