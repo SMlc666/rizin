@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - ci/mega-dag-prototype
+      - ci/mega-dag-balanced-asm
   workflow_dispatch:
 
 permissions:
@@ -36,10 +37,13 @@ jobs:
           # loader because it requires additional external dependencies.
           expected = {'abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
                       'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
-          categories = jobs['regression-shards']['strategy']['matrix']['category']
-          assert len(categories) == len(expected) and set(categories) == expected
-          for category in categories:
+          for category in expected:
               assert (Path('test/db') / category).is_dir(), category
+          assert 'plan-regressions' in jobs
+          assert 'plan-regressions' in jobs['regression-shards']['needs']
+          assert 'plan-regressions' in jobs['regression-report']['needs']
+          assert Path('.github/ci/asm-duration-weights.json').is_file()
+          assert Path('.github/scripts/mega_dag_shards.py').is_file()
           state = {}
           def visit(job):
               assert job in jobs, f'missing job {job}'
@@ -55,9 +59,37 @@ jobs:
               state[job] = 'done'
           for job in jobs:
               visit(job)
+          assert 'regression-report' in jobs['quality-gate']['needs']
           assert 'quality-gate' in jobs
-          print(f'Validated {len(jobs)} logical jobs and {len(categories)} regression categories.')
+          print(f'Validated {len(jobs)} logical jobs and {len(expected)} regression categories.')
           PY
+          python3 .github/scripts/mega_dag_shards.py --self-test
+
+  plan-regressions:
+    name: "05 / Plan historical-duration regression DAG"
+    needs: validate-dag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Generate non-overlapping shard matrix
+        id: plan
+        run: |
+          python3 .github/scripts/mega_dag_shards.py \
+            --root test/db \
+            --history .github/ci/asm-duration-weights.json \
+            --manifest shard-plan.json \
+            --output "$GITHUB_OUTPUT" \
+            --asm-groups 4
+      - name: Persist audited matrix manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: regression-shard-plan
+          path: shard-plan.json
+          retention-days: 14
+          if-no-files-found: error
 
   prepare-fixtures:
     name: "10 / Package regression fixtures"
@@ -190,27 +222,14 @@ jobs:
           rz-bin -v
 
   regression-shards:
-    name: "20 / rz-test / ${{ matrix.category }}"
-    needs: [build-gcc, prepare-fixtures]
+    name: "20 / rz-test / ${{ matrix.name }}"
+    needs: [plan-regressions, build-gcc, prepare-fixtures]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 8
-      matrix:
-        category:
-          - abi
-          - analysis
-          - archos
-          - asm
-          - cmd
-          - esil
-          - formats
-          - inquiry
-          - io
-          - json
-          - rzil
-          - tools
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.plan-regressions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
       - name: Install test dependencies
@@ -233,25 +252,32 @@ jobs:
           tar -C "$HOME" -xzf "$RUNNER_TEMP/runtime/rizin-runtime.tar.gz"
           tar -C test -xzf "$RUNNER_TEMP/fixtures/rizin-fixtures.tar.gz"
           python3 -m pip install --user ./test/rz-pipe/python
-      - name: Run regression category
+      - name: Run regression shard
+        env:
+          SHARD_PATHS_JSON: ${{ toJSON(matrix.paths) }}
+          SHARD_NAME: ${{ matrix.name }}
         run: |
           export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
-          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:$LD_LIBRARY_PATH"
-          export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
+          export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
+          export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
           cd test
-          # rz-test can exit successfully when zero cases were discovered.
-          # Treat an empty shard as a broken CI topology, never a green Job.
-          rz-test -n "db/${{ matrix.category }}" | tee "inventory-${{ matrix.category }}.txt"
-          awk '/^Loaded [0-9]+ tests\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' "inventory-${{ matrix.category }}.txt"
-          rz-test -j "$(nproc)" -L -o "results-${{ matrix.category }}.json" "db/${{ matrix.category }}"
+          # JSON -> separate shell arguments, with no shell eval or word splitting.
+          mapfile -t shard_paths < <(python3 -c 'import json,os; [print(p) for p in json.loads(os.environ["SHARD_PATHS_JSON"])]')
+          test "${#shard_paths[@]}" -gt 0
+          for path in "${shard_paths[@]}"; do
+            case "$path" in db/*) test -e "$path" ;; *) exit 1 ;; esac
+          done
+          rz-test -n "${shard_paths[@]}" | tee "inventory-${SHARD_NAME}.txt"
+          awk '/^Loaded [0-9]+ tests\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' "inventory-${SHARD_NAME}.txt"
+          rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${shard_paths[@]}"
       - name: Persist independent shard result
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: regression-${{ matrix.category }}
+          name: regression-${{ matrix.name }}
           path: |
-            test/results-${{ matrix.category }}.json
-            test/inventory-${{ matrix.category }}.txt
+            test/results-${{ matrix.name }}.json
+            test/inventory-${{ matrix.name }}.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -420,10 +446,15 @@ jobs:
   regression-report:
     name: "90 / Regression inventory and results audit"
     if: always()
-    needs: regression-shards
+    needs: [plan-regressions, regression-shards]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Retrieve planned matrix manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: regression-shard-plan
+          path: shard-plan
       - name: Retrieve shard result manifests
         uses: actions/download-artifact@v8
         with:
@@ -436,60 +467,71 @@ jobs:
           import os
           from collections import Counter
           from pathlib import Path
-          root = Path('shard-results')
-          categories = ('abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
-                        'formats', 'inquiry', 'io', 'json', 'rzil', 'tools')
-          lines = ['### Regression shard audit', '',
-                   '| Shard | Cases | OK | Broken (expected) | Failed | Fixed |',
+
+          manifest = json.loads(Path('shard-plan/shard-plan.json').read_text())
+          planned = manifest['matrix']['include']
+          names = [s['name'] for s in planned]
+          categories = {'abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
+                        'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
+          assert len(names) == 15 and len(names) == len(set(names))
+          assert {s['category'] for s in planned} == categories
+          asm = [path for s in planned if s['category'] == 'asm'
+                 for path in s['paths']]
+          assert len(asm) == len(set(asm)) == manifest['discovered_asm_file_count']
+          assert all(p.startswith('db/asm/') for p in asm)
+          assert sum(s['category'] == 'asm' for s in planned) == 4
+
+          lines = ['### Dynamic regression DAG: audited results', '',
+                   '| Shard | Cases | OK | Broken | Failed | Fixed |',
                    '| --- | ---: | ---: | ---: | ---: | ---: |']
           errors = []
-          fixed_total = 0
-          total_cases = 0
-          for category in categories:
-              folder = root / f'regression-{category}'
-              report = folder / f'results-{category}.json'
-              inventory = folder / f'inventory-{category}.txt'
+          fixed_total = total_cases = 0
+          for shard in planned:
+              name = shard['name']
+              folder = Path('shard-results') / f'regression-{name}'
+              report = folder / f'results-{name}.json'
+              inventory = folder / f'inventory-{name}.txt'
               if not report.is_file() or not inventory.is_file():
-                  errors.append(f'{category}: missing JSON report or inventory')
-                  lines.append(f'| {category} | missing | - | - | - | - |')
+                  errors.append(f'{name}: missing report or inventory')
+                  lines.append(f'| {name} | missing | - | - | - | - |')
                   continue
               try:
                   cases = json.loads(report.read_text())
                   if not isinstance(cases, list) or not cases:
-                      raise ValueError('empty or non-array test results')
-                  if not any(line.startswith('Loaded ') and
-                             int(line.split()[1]) > 0
-                             for line in inventory.read_text().splitlines()):
-                      raise ValueError('no positive test inventory')
-                  statuses = Counter(x['result'] for x in cases)
-                  unexpected = set(statuses) - {'ok', 'broken', 'failed', 'fixed'}
-                  if unexpected:
-                      raise ValueError(f'unexpected result status: {unexpected}')
-                  lines.append(f'| {category} | {len(cases)} | {statuses["ok"]} | '
-                               f'{statuses["broken"]} | {statuses["failed"]} | '
-                               f'{statuses["fixed"]} |')
+                      raise ValueError('empty or non-array results')
+                  loaded = [int(t.split()[1]) for t in inventory.read_text().splitlines()
+                            if t.startswith('Loaded ') and t.endswith(' tests.')]
+                  if not loaded or loaded[-1] < 1 or loaded[-1] != len(cases):
+                      raise ValueError(f'inventory/result mismatch: {loaded} vs {len(cases)}')
+                  status = Counter(t['result'] for t in cases)
+                  invalid = set(status) - {'ok', 'broken', 'failed', 'fixed'}
+                  if invalid:
+                      raise ValueError(f'invalid status: {invalid}')
                   total_cases += len(cases)
-                  fixed_total += statuses['fixed']
-                  # rz-test itself treats 'fixed' as a successful result:
-                  # an expected-broken case now passes. Signal it for
-                  # maintainers without contradicting rz-test's exit code.
-                  if statuses['fixed']:
-                      print(f'::warning title=Expected-broken tests now pass::{category}: '
-                            f'{statuses["fixed"]} fixed cases need baseline review')
-                  if statuses['failed']:
-                      errors.append(f'{category}: {statuses["failed"]} unexpected failures')
+                  fixed_total += status['fixed']
+                  lines.append(f'| {name} | {len(cases)} | {status["ok"]} | '
+                               f'{status["broken"]} | {status["failed"]} | '
+                               f'{status["fixed"]} |')
+                  if status['fixed']:
+                      print(f'::warning title=Expected-broken tests now pass::{name}: '
+                            f'{status["fixed"]} fixed cases need baseline review')
+                  if status['failed']:
+                      errors.append(f'{name}: {status["failed"]} unexpected failures')
               except Exception as exc:
-                  errors.append(f'{category}: {exc}')
-                  lines.append(f'| {category} | invalid | - | - | - | - |')
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
-              fh.write('\n'.join(lines) + '\n')
-              fh.write(f'\n**Audited cases:** {total_cases}; '
-                       f'**expected-broken cases now passing (warning):** {fixed_total}.\n')
+                  errors.append(f'{name}: {exc}')
+                  lines.append(f'| {name} | invalid | - | - | - | - |')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+              stream.write('\n'.join(lines) + '\n')
+              stream.write(f'\n**Audited tests:** {total_cases}; '
+                           f'**fixed (nonfatal):** {fixed_total}; '
+                           f'**ASM plan CPU loads:** '
+                           f'{manifest["predicted_asm_shard_seconds"]}\n')
               if errors:
-                  fh.write('\n**Audit errors:** ' + '; '.join(errors) + '\n')
+                  stream.write('\n**Audit errors:** ' + '; '.join(errors) + '\n')
           if errors:
               raise SystemExit('; '.join(errors))
-          print('All 12 standard regression categories have nonempty and valid result reports.')
+          print(f'All {len(planned)} planned shards produced validated results '
+                f'for {total_cases} test cases.')
           PY
 
   quality-gate:
@@ -497,6 +539,7 @@ jobs:
     if: always()
     needs:
       - validate-dag
+      - plan-regressions
       - prepare-fixtures
       - build-gcc
       - cli-smoke
