@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #include <rz_debug.h>
+#define RZ_CI_PROFILE_UNIT "trace"
+#define RZ_CI_PROFILE_NAMES { "ins_before", "ins_after", "reserved" }
+#include "ci_profile.h"
 
 /* Old debug trace implementation */
 RZ_API RzDebugTrace *rz_debug_trace_new(void) {
@@ -47,7 +50,7 @@ RZ_API int rz_debug_trace_tag(RzDebug *dbg, int tag) {
 // AVX-512 state), which the glibc PLT/IFUNC resolvers write on every call.
 #define RZ_DEBUG_TRACE_MEMREF_MAX 4096
 
-RZ_API bool rz_debug_trace_ins_before(RzDebug *dbg) {
+static bool ci_trace_ins_before_impl(RzDebug *dbg) {
 	RzListIter *it, *it_tmp;
 	RzAnalysisValue *val;
 	ut8 buf_pc[32];
@@ -116,6 +119,13 @@ RZ_API bool rz_debug_trace_ins_before(RzDebug *dbg) {
 	return true;
 }
 
+RZ_API bool rz_debug_trace_ins_before(RzDebug *dbg) {
+	ut64 started = rz_ci_profile_start();
+	bool ok = ci_trace_ins_before_impl(dbg);
+	rz_ci_profile_end(0, started);
+	return ok;
+}
+
 /**
  * \brief Add register/memory changes to the debug session.
  *
@@ -123,7 +133,7 @@ RZ_API bool rz_debug_trace_ins_before(RzDebug *dbg) {
  * \return false The current instruction is not known so no changes can be recorded.
  * \return true Otherwise.
  */
-RZ_API bool rz_debug_trace_ins_after(RZ_NONNULL RzDebug *dbg) {
+static bool ci_trace_ins_after_impl(RZ_NONNULL RzDebug *dbg) {
 	rz_return_val_if_fail(dbg, false);
 	if (!dbg->cur_op) { // Can happen if hard stepping is available and code is unknown to Rizin
 		return false;
@@ -181,6 +191,13 @@ RZ_API bool rz_debug_trace_ins_after(RZ_NONNULL RzDebug *dbg) {
 	rz_analysis_op_free(dbg->cur_op);
 	dbg->cur_op = NULL;
 	return true;
+}
+
+RZ_API bool rz_debug_trace_ins_after(RZ_NONNULL RzDebug *dbg) {
+	ut64 started = rz_ci_profile_start();
+	bool ok = ci_trace_ins_after_impl(dbg);
+	rz_ci_profile_end(1, started);
+	return ok;
 }
 
 /*
