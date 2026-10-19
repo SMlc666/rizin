@@ -8,6 +8,22 @@
 #include <rz_drx.h>
 #include <rz_core.h>
 #include <rz_windows.h>
+#include "ci_debug_profile.h"
+
+enum { CI_TRACE_BEFORE, CI_STEP_BACKEND, CI_TRACE_AFTER, CI_REVERSE_SCAN, CI_GOTO_RESTORE };
+static RzCiDebugProfileBucket ci_debug_buckets[] = {
+	{ "trace_before", 0, 0, 0 },
+	{ "step_backend", 0, 0, 0 },
+	{ "trace_after", 0, 0, 0 },
+	{ "reverse_breakpoint_scan", 0, 0, 0 },
+	{ "goto_state_restore", 0, 0, 0 },
+};
+static RzCiDebugProfile ci_debug_profiler = { -1, "debug", ci_debug_buckets, 5 };
+static void ci_debug_profile_dump(void) {
+	rz_ci_debug_profile_dump(&ci_debug_profiler);
+}
+#define CI_DEBUG_START() rz_ci_debug_profile_start(&ci_debug_profiler, ci_debug_profile_dump)
+#define CI_DEBUG_END(bucket, start) rz_ci_debug_profile_end(&ci_debug_profiler, bucket, start)
 
 RZ_LIB_VERSION(rz_debug);
 
@@ -996,25 +1012,31 @@ RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
 			dbg->session->cnum++;
 			dbg->session->maxcnum++;
 			dbg->session->bp = 0;
+			uint64_t ci_begin = CI_DEBUG_START();
 			if (!rz_debug_trace_ins_before(dbg)) {
 				RZ_LOG_ERROR("debug: trace insert before has failed\n");
 			}
+			CI_DEBUG_END(CI_TRACE_BEFORE, ci_begin);
 		}
 
+		uint64_t ci_step = CI_DEBUG_START();
 		if (dbg->swstep) {
 			ret = rz_debug_step_soft(dbg);
 		} else {
 			ret = rz_debug_step_hard(dbg, &bp);
 		}
+		CI_DEBUG_END(CI_STEP_BACKEND, ci_step);
 		if (!ret) {
 			RZ_LOG_ERROR("debug: failed to step\n");
 			return steps_taken;
 		}
 
 		if (dbg->session && dbg->recoil_mode == RZ_DBG_RECOIL_NONE) {
+			uint64_t ci_end = CI_DEBUG_START();
 			if (!rz_debug_trace_ins_after(dbg)) {
 				RZ_LOG_ERROR("debug: trace insert after has failed\n");
 			}
+			CI_DEBUG_END(CI_TRACE_AFTER, ci_end);
 			dbg->session->reasontype = dbg->reason.type;
 			dbg->session->bp = bp;
 		}
@@ -1125,7 +1147,9 @@ RZ_API bool rz_debug_goto_cnum(RzDebug *dbg, ut32 cnum) {
 		return false;
 	}
 	dbg->session->cnum = cnum;
+	uint64_t ci_restore = CI_DEBUG_START();
 	rz_debug_session_restore_reg_mem(dbg, cnum);
+	CI_DEBUG_END(CI_GOTO_RESTORE, ci_restore);
 
 	return true;
 }
@@ -1476,6 +1500,7 @@ RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
 		return false;
 	}
 	RzDebugChangeReg *reg;
+	uint64_t ci_scan = CI_DEBUG_START();
 	rz_vector_foreach_prev (vreg, reg) {
 		if (reg->cnum >= dbg->session->cnum) {
 			continue;
@@ -1487,6 +1512,7 @@ RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
 			break;
 		}
 	}
+	CI_DEBUG_END(CI_REVERSE_SCAN, ci_scan);
 
 	if (has_bp) {
 		rz_debug_goto_cnum(dbg, cnum);
