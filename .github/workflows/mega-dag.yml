@@ -6,6 +6,7 @@ on:
     branches:
       - ci/mega-dag-prototype
       - ci/mega-dag-balanced-asm
+      - ci/mega-dag-lean-fixtures
   workflow_dispatch:
 
 permissions:
@@ -241,20 +242,33 @@ jobs:
         with:
           name: rizin-gcc-runtime
           path: ${{ runner.temp }}/runtime
-      - uses: actions/download-artifact@v8
+      - name: Fetch external binary fixtures only for non-ASM tests
+        if: matrix.category != 'asm'
+        uses: actions/download-artifact@v8
         with:
           name: rizin-fixtures
           path: ${{ runner.temp }}/fixtures
-      - name: Restore verified runtime and fixtures
+      - name: Restore verified GCC runtime
         run: |
           (cd "$RUNNER_TEMP/runtime" && sha256sum -c rizin-runtime.tar.gz.sha256)
-          (cd "$RUNNER_TEMP/fixtures" && sha256sum -c rizin-fixtures.tar.gz.sha256)
           tar -C "$HOME" -xzf "$RUNNER_TEMP/runtime/rizin-runtime.tar.gz"
+      - name: Restore external fixtures only for non-ASM tests
+        if: matrix.category != 'asm'
+        run: |
+          (cd "$RUNNER_TEMP/fixtures" && sha256sum -c rizin-fixtures.tar.gz.sha256)
           tar -C test -xzf "$RUNNER_TEMP/fixtures/rizin-fixtures.tar.gz"
           python3 -m pip install --user ./test/rz-pipe/python
+      - name: Confirm ASM tests do not depend on external fixtures
+        if: matrix.category == 'asm'
+        run: |
+          # Git checkout does not materialize the external test-binary repo.
+          test ! -d test/rz-pipe/python
+          test ! -d test/bins/elf
+          echo 'ASM job deliberately runs without external test binaries or rz-pipe.'
       - name: Run regression shard
         env:
           SHARD_PATHS_JSON: ${{ toJSON(matrix.paths) }}
+          SHARD_EXCLUDES_JSON: ${{ toJSON(matrix.exclude) }}
           SHARD_NAME: ${{ matrix.name }}
         run: |
           export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
@@ -263,13 +277,16 @@ jobs:
           cd test
           # JSON -> separate shell arguments, with no shell eval or word splitting.
           mapfile -t shard_paths < <(python3 -c 'import json,os; [print(p) for p in json.loads(os.environ["SHARD_PATHS_JSON"])]')
+          mapfile -t shard_excludes < <(python3 -c 'import json,os; [print(p) for p in json.loads(os.environ["SHARD_EXCLUDES_JSON"])]')
           test "${#shard_paths[@]}" -gt 0
-          for path in "${shard_paths[@]}"; do
+          for path in "${shard_paths[@]}" "${shard_excludes[@]}"; do
             case "$path" in db/*) test -e "$path" ;; *) exit 1 ;; esac
           done
-          rz-test -n "${shard_paths[@]}" | tee "inventory-${SHARD_NAME}.txt"
+          exclude_args=()
+          for path in "${shard_excludes[@]}"; do exclude_args+=(-e "$path"); done
+          rz-test -n "${exclude_args[@]}" "${shard_paths[@]}" | tee "inventory-${SHARD_NAME}.txt"
           awk '/^Loaded [0-9]+ tests\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' "inventory-${SHARD_NAME}.txt"
-          rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${shard_paths[@]}"
+          rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
       - name: Persist independent shard result
         if: always()
         uses: actions/upload-artifact@v7
@@ -473,8 +490,14 @@ jobs:
           names = [s['name'] for s in planned]
           categories = {'abi', 'analysis', 'archos', 'asm', 'cmd', 'esil',
                         'formats', 'inquiry', 'io', 'json', 'rzil', 'tools'}
-          assert len(names) == 15 and len(names) == len(set(names))
+          assert len(names) == 16 and len(names) == len(set(names))
           assert {s['category'] for s in planned} == categories
+          heavy = manifest['isolated_archos_file']
+          assert heavy == 'db/archos/linux-x64/dbg_cont_back'
+          assert next(x for x in planned if x['name'] == 'archos')['exclude'] == [heavy]
+          assert next(x for x in planned if x['name'] == 'archos-heavy')['paths'] == [heavy]
+          assert all(not x['exclude'] for x in planned
+                     if x['name'] not in {'archos', 'archos-heavy'})
           asm = [path for s in planned if s['category'] == 'asm'
                  for path in s['paths']]
           assert len(asm) == len(set(asm)) == manifest['discovered_asm_file_count']
@@ -530,8 +553,15 @@ jobs:
                   stream.write('\n**Audit errors:** ' + '; '.join(errors) + '\n')
           if errors:
               raise SystemExit('; '.join(errors))
+          # The split must not silently remove tests from the 2026-10-19
+          # Linux x86_64 baseline. Adding new tests is allowed.
+          archos_cases = sum(len(json.loads((Path('shard-results') / f'regression-{name}' /
+                              f'results-{name}.json').read_text()))
+                             for name in ('archos', 'archos-heavy'))
+          if archos_cases < 161:
+              raise SystemExit(f'ARCHOS test coverage dropped: {archos_cases} < 161')
           print(f'All {len(planned)} planned shards produced validated results '
-                f'for {total_cases} test cases.')
+                f'for {total_cases} test cases; archos: {archos_cases}.')
           PY
 
   quality-gate:
