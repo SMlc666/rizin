@@ -22,6 +22,7 @@ def logical_key(name):
     if name.startswith("10 / Build compatibility"): return "compatibility"
     if name.startswith("10 / ") and " ASan+UBSan /" in name: return "sanitizer"
     if name.startswith("20 / Validate staged CLI"): return "cli-smoke"
+    if name.startswith("20 / Dedicated archos-heavy"): return "archos-heavy"
     if name.startswith("20 / rz-test /"): return "regression-shards"
     if name.startswith("90 / Regression inventory"): return "regression-report"
     if name.startswith("99 / Aggregate all DAG"): return "quality-gate"
@@ -143,7 +144,8 @@ def self_test():
         "validate-dag": [], "build-gcc": ["validate-dag"],
         "prepare-fixtures": ["validate-dag"],
         "regression-shards": ["build-gcc", "prepare-fixtures"],
-        "quality-gate": ["regression-shards", "build-gcc"],
+        "archos-heavy": ["build-gcc", "prepare-fixtures"],
+        "quality-gate": ["regression-shards", "archos-heavy", "build-gcc"],
     }
     origin = datetime(2026, 10, 19, tzinfo=timezone.utc)
     fmt = lambda x: (origin + timedelta(seconds=x)).isoformat()
@@ -151,7 +153,7 @@ def self_test():
               ("10 / GCC build + Meson suites + runtime artifact", 6, 50),
               ("10 / Package regression fixtures", 6, 20),
               ("20 / rz-test / asm-0", 51, 71),
-              ("20 / rz-test / archos-heavy", 55, 92),
+              ("20 / Dedicated archos-heavy debugger regression", 55, 92),
               ("99 / Aggregate all DAG results", 93, 99)]
     jobs = [{"name": name, "started_at": fmt(a),
              "completed_at": fmt(b), "conclusion": "success"}
@@ -159,7 +161,7 @@ def self_test():
     report, markdown = analyze(jobs, edges)
     assert report["gate_observed_wall_s"] == 99
     assert [v["stage"] for v in report["chain"]] == [
-        "validate-dag", "build-gcc", "regression-shards", "quality-gate"]
+        "validate-dag", "build-gcc", "archos-heavy", "quality-gate"]
     assert report["chain"][-2]["name"].endswith("archos-heavy")
     assert "99.0s" in markdown
     print("Critical-path reporter self-test passed")
