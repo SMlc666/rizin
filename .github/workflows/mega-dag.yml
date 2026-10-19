@@ -7,6 +7,7 @@ on:
       - ci/mega-dag-prototype
       - ci/mega-dag-balanced-asm
       - ci/mega-dag-lean-fixtures
+      - ci/mega-dag-observability
   workflow_dispatch:
 
 permissions:
@@ -65,6 +66,9 @@ jobs:
           print(f'Validated {len(jobs)} logical jobs and {len(expected)} regression categories.')
           PY
           python3 .github/scripts/mega_dag_shards.py --self-test
+          python3 .github/scripts/ci_process_sampler.py --self-test
+          python3 -m pip install --user PyYAML
+          python3 .github/scripts/ci_critical_path.py --self-test
 
   plan-regressions:
     name: "05 / Plan historical-duration regression DAG"
@@ -286,7 +290,15 @@ jobs:
           for path in "${shard_excludes[@]}"; do exclude_args+=(-e "$path"); done
           rz-test -n "${exclude_args[@]}" "${shard_paths[@]}" | tee "inventory-${SHARD_NAME}.txt"
           awk '/^Loaded [0-9]+ tests\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' "inventory-${SHARD_NAME}.txt"
-          rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
+          if [ "$SHARD_NAME" = "archos-heavy" ]; then
+            # Observe CPU/RSS/process states without ptrace (which would
+            # interfere with Rizin's own debugger). Exit code is preserved.
+            python3 ../.github/scripts/ci_process_sampler.py \
+              --output "diagnostics-${SHARD_NAME}.json" --interval 5 -- \
+              rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
+          else
+            rz-test -j "$(nproc)" -L -o "results-${SHARD_NAME}.json" "${exclude_args[@]}" "${shard_paths[@]}"
+          fi
       - name: Persist independent shard result
         if: always()
         uses: actions/upload-artifact@v7
@@ -297,6 +309,14 @@ jobs:
             test/inventory-${{ matrix.name }}.txt
           if-no-files-found: error
           retention-days: 7
+      - name: Persist heavy debugger process profile
+        if: always() && matrix.name == 'archos-heavy'
+        uses: actions/upload-artifact@v7
+        with:
+          name: debugger-process-diagnostics
+          path: test/diagnostics-archos-heavy.json
+          if-no-files-found: error
+          retention-days: 14
 
   sanitizer:
     name: "10 / ${{ matrix.compiler }} ASan+UBSan / Meson suites"
@@ -596,3 +616,37 @@ jobs:
             exit 1
           }
           echo 'All required DAG stages completed successfully.'
+
+  performance-report:
+    name: "100 / Observed DAG critical-path report"
+    # This report runs even when quality-gate fails. It cannot make a
+    # failed quality gate green; a diagnostic failure itself remains red.
+    needs: quality-gate
+    if: always()
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install lightweight YAML reader
+        run: python3 -m pip install --user PyYAML
+      - name: Explain observed gate-blocking path from actual job timestamps
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/ci_critical_path.py \
+            --workflow .github/workflows/mega-dag.yml \
+            --report mega-dag-critical-path.json \
+            --markdown mega-dag-critical-path.md
+      - name: Keep machine-readable critical-path report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mega-dag-critical-path
+          path: |
+            mega-dag-critical-path.json
+            mega-dag-critical-path.md
+          if-no-files-found: error
+          retention-days: 14
