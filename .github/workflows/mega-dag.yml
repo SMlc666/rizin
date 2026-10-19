@@ -344,7 +344,7 @@ jobs:
           heavy="db/archos/linux-x64/dbg_cont_back"
           test -f "$heavy"
           rz-test -n "$heavy" | tee inventory-archos-heavy.txt
-          awk '/^Loaded [0-9]+ tests\\./ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' inventory-archos-heavy.txt
+          awk '/^Loaded [0-9]+ tests[.]$/ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' inventory-archos-heavy.txt
           python3 ../.github/scripts/ci_process_sampler.py \
             --output diagnostics-archos-heavy.json --interval 5 -- \
             rz-test -j "$(nproc)" -L -o results-archos-heavy.json "$heavy"
