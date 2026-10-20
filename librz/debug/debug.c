@@ -5,6 +5,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #include <rz_debug.h>
+
+#define RZ_CI_PROFILE_MODULE "debug"
+#define RZ_CI_PROFILE_BUCKETS { "step_total", 0, 0 }, { "continue_back_total", 0, 0 }, { "goto_cnum_total", 0, 0 }
+#include "ci_debug_profile.h"
 #include <rz_drx.h>
 #include <rz_core.h>
 #include <rz_windows.h>
@@ -966,7 +970,7 @@ RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
 	return true;
 }
 
-RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
+static int rz_debug_step_impl(RzDebug *dbg, int steps) {
 	RzBreakpointItem *bp = NULL;
 	int ret, steps_taken = 0;
 
@@ -1024,6 +1028,13 @@ RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
 	}
 
 	return steps_taken;
+}
+
+RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
+	ut64 started = rz_ci_profile_begin();
+	int result = rz_debug_step_impl(dbg, steps);
+	rz_ci_profile_end(0, started);
+	return result;
 }
 
 static bool isStepOverable(ut64 opType) {
@@ -1119,7 +1130,7 @@ RZ_API int rz_debug_step_over(RzDebug *dbg, int steps) {
 	return steps_taken;
 }
 
-RZ_API bool rz_debug_goto_cnum(RzDebug *dbg, ut32 cnum) {
+static bool rz_debug_goto_cnum_impl(RzDebug *dbg, ut32 cnum) {
 	if (cnum > dbg->session->maxcnum) {
 		eprintf("Error: out of cnum range\n");
 		return false;
@@ -1128,6 +1139,13 @@ RZ_API bool rz_debug_goto_cnum(RzDebug *dbg, ut32 cnum) {
 	rz_debug_session_restore_reg_mem(dbg, cnum);
 
 	return true;
+}
+
+RZ_API bool rz_debug_goto_cnum(RzDebug *dbg, ut32 cnum) {
+	ut64 started = rz_ci_profile_begin();
+	bool result = rz_debug_goto_cnum_impl(dbg, cnum);
+	rz_ci_profile_end(2, started);
+	return result;
 }
 
 RZ_API int rz_debug_step_back(RzDebug *dbg, int steps) {
@@ -1461,7 +1479,7 @@ RZ_API int rz_debug_continue_until_nonblock(RzDebug *dbg, ut64 addr) {
 	return rz_debug_continue_until_internal(dbg, addr, false);
 }
 
-RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
+static bool rz_debug_continue_back_impl(RzDebug *dbg) {
 	int cnum;
 	bool has_bp = false;
 
@@ -1497,6 +1515,13 @@ RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
 	}
 
 	return true;
+}
+
+RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
+	ut64 started = rz_ci_profile_begin();
+	bool result = rz_debug_continue_back_impl(dbg);
+	rz_ci_profile_end(1, started);
+	return result;
 }
 
 static int show_syscall(RzDebug *dbg, const char *sysreg) {
