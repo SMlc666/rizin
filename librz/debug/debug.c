@@ -5,6 +5,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #include <rz_debug.h>
+
+#define RZ_CI_PROFILE_UNIT "debug"
+#define RZ_CI_PROFILE_PHASE_NAMES { "debug_step", "native_step", "continue_back" }
+#include "ci_profile.h"
+enum { CI_STEP, CI_NATIVE_STEP, CI_BACK }
 #include <rz_drx.h>
 #include <rz_core.h>
 #include <rz_windows.h>
@@ -913,7 +918,7 @@ RZ_API int rz_debug_step_soft(RzDebug *dbg) {
 	return ret;
 }
 
-RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
+static int rz_debug_step_hard_impl(RzDebug *dbg, RzBreakpointItem **pb) {
 	RzDebugReasonType reason;
 
 	dbg->reason.type = RZ_DEBUG_REASON_STEP;
@@ -966,7 +971,14 @@ RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
 	return true;
 }
 
-RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
+RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
+	const ut64 start = rz_ci_profile_begin();
+	const int result = rz_debug_step_hard_impl(dbg, pb);
+	rz_ci_profile_end(CI_NATIVE_STEP, start);
+	return result;
+}
+
+static int rz_debug_step_impl(RzDebug *dbg, int steps) {
 	RzBreakpointItem *bp = NULL;
 	int ret, steps_taken = 0;
 
@@ -1024,6 +1036,13 @@ RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
 	}
 
 	return steps_taken;
+}
+
+RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
+	const ut64 start = rz_ci_profile_begin();
+	const int result = rz_debug_step_impl(dbg, steps);
+	rz_ci_profile_end(CI_STEP, start);
+	return result;
 }
 
 static bool isStepOverable(ut64 opType) {
@@ -1461,7 +1480,7 @@ RZ_API int rz_debug_continue_until_nonblock(RzDebug *dbg, ut64 addr) {
 	return rz_debug_continue_until_internal(dbg, addr, false);
 }
 
-RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
+static bool rz_debug_continue_back_impl(RzDebug *dbg) {
 	int cnum;
 	bool has_bp = false;
 
@@ -1497,6 +1516,13 @@ RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
 	}
 
 	return true;
+}
+
+RZ_API bool rz_debug_continue_back(RzDebug *dbg) {
+	const ut64 start = rz_ci_profile_begin();
+	const bool result = rz_debug_continue_back_impl(dbg);
+	rz_ci_profile_end(CI_BACK, start);
+	return result;
 }
 
 static int show_syscall(RzDebug *dbg, const char *sysreg) {
