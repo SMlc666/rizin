@@ -998,30 +998,30 @@ RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
 			dbg->session->cnum++;
 			dbg->session->maxcnum++;
 			dbg->session->bp = 0;
-			ut64 t = rz_ci_profile_start();
+			ut64 ci_before_start = rz_ci_profile_start();
 			bool trace_ok = rz_debug_trace_ins_before(dbg);
-			rz_ci_profile_end(0, "trace_before", t);
+			rz_ci_profile_end(0, "trace_before", ci_before_start);
 			if (!trace_ok) {
 				RZ_LOG_ERROR("debug: trace insert before has failed\n");
 			}
 		}
 
-		ut64 t = rz_ci_profile_start();
+		ut64 ci_step_start = rz_ci_profile_start();
 		if (dbg->swstep) {
 			ret = rz_debug_step_soft(dbg);
 		} else {
 			ret = rz_debug_step_hard(dbg, &bp);
 		}
-		rz_ci_profile_end(1, "actual_step", t);
+		rz_ci_profile_end(1, "actual_step", ci_step_start);
 		if (!ret) {
 			RZ_LOG_ERROR("debug: failed to step\n");
 			return steps_taken;
 		}
 
 		if (dbg->session && dbg->recoil_mode == RZ_DBG_RECOIL_NONE) {
-			ut64 t = rz_ci_profile_start();
+			ut64 ci_after_start = rz_ci_profile_start();
 			bool trace_ok = rz_debug_trace_ins_after(dbg);
-			rz_ci_profile_end(2, "trace_after", t);
+			rz_ci_profile_end(2, "trace_after", ci_after_start);
 			if (!trace_ok) {
 				RZ_LOG_ERROR("debug: trace insert after has failed\n");
 			}
