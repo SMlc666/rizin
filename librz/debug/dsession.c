@@ -4,6 +4,10 @@
 #include <rz_debug.h>
 #include <rz_util/rz_json.h>
 
+#define RZ_CI_PROFILE_MODULE "dsession"
+#define RZ_CI_PROFILE_BUCKETS { "checkpoint", 0, 0 }, { "initial_snapshots", 0, 0 }, { "restore_registers", 0, 0 }, { "sync_registers", 0, 0 }, { "restore_memory_total", 0, 0 }
+#include "ci_debug_profile.h"
+
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_MEM(x, y)   ((x) >= ((RzDebugChangeMem *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_CHKPT(x, y) ((x) >= ((RzDebugCheckpoint *)y)->cnum ? 1 : -1)
@@ -51,7 +55,7 @@ RZ_API RzDebugSession *rz_debug_session_new(void) {
 	return session;
 }
 
-RZ_API bool rz_debug_add_checkpoint(RzDebug *dbg) {
+static bool rz_debug_add_checkpoint_impl(RzDebug *dbg) {
 	rz_return_val_if_fail(dbg->session, false);
 	size_t i;
 	RzDebugCheckpoint checkpoint = { 0 };
@@ -97,6 +101,13 @@ RZ_API bool rz_debug_add_checkpoint(RzDebug *dbg) {
 	return true;
 }
 
+RZ_API bool rz_debug_add_checkpoint(RzDebug *dbg) {
+	ut64 started = rz_ci_profile_begin();
+	bool result = rz_debug_add_checkpoint_impl(dbg);
+	rz_ci_profile_end(0, started);
+	return result;
+}
+
 static void _set_initial_registers(RzDebug *dbg) {
 	size_t i;
 	for (i = 0; i < RZ_REG_TYPE_LAST; i++) {
@@ -133,11 +144,13 @@ RZ_API void _restore_registers(RzDebug *dbg, ut32 cnum) {
 }
 
 static void _set_initial_memory(RzDebug *dbg) {
+	ut64 started = rz_ci_profile_begin();
 	RzListIter *iter;
 	RzDebugSnap *snap;
 	rz_list_foreach (dbg->session->cur_chkpt->snaps, iter, snap) {
 		dbg->iob.write_at(dbg->iob.io, snap->addr, snap->data, snap->size);
 	}
+	rz_ci_profile_end(1, started);
 }
 
 static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
@@ -175,11 +188,17 @@ RZ_API void rz_debug_session_restore_reg_mem(RzDebug *dbg, ut32 cnum) {
 	dbg->session->cur_chkpt = _get_checkpoint_before(dbg->session, cnum);
 
 	// Restore registers
+	ut64 started = rz_ci_profile_begin();
 	_restore_registers(dbg, cnum);
+	rz_ci_profile_end(2, started);
+	started = rz_ci_profile_begin();
 	rz_debug_reg_sync(dbg, RZ_REG_TYPE_ANY, true);
+	rz_ci_profile_end(3, started);
 
-	// Restore memory
+	// Restore memory (includes initial snapshots measured separately)
+	started = rz_ci_profile_begin();
 	_restore_memory(dbg, cnum);
+	rz_ci_profile_end(4, started);
 }
 
 RZ_API void rz_debug_session_list_memory(RzDebug *dbg) {
