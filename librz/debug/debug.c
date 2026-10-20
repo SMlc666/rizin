@@ -10,15 +10,22 @@
 #include <rz_windows.h>
 #include "ci_debug_profile.h"
 
-enum { CI_TRACE_BEFORE, CI_STEP_BACKEND, CI_TRACE_AFTER, CI_REVERSE_SCAN, CI_GOTO_RESTORE };
+enum {
+	CI_TRACE_BEFORE, CI_STEP_BACKEND, CI_TRACE_AFTER, CI_REVERSE_SCAN, CI_GOTO_RESTORE,
+	CI_HARD_RECOIL, CI_HARD_NATIVE_STEP, CI_HARD_WAIT, CI_HARD_POST_WAIT
+};
 static RzCiDebugProfileBucket ci_debug_buckets[] = {
 	{ "trace_before", 0, 0, 0 },
 	{ "step_backend", 0, 0, 0 },
 	{ "trace_after", 0, 0, 0 },
 	{ "reverse_breakpoint_scan", 0, 0, 0 },
 	{ "goto_state_restore", 0, 0, 0 },
+	{ "hard_recoil", 0, 0, 0 },
+	{ "hard_native_step", 0, 0, 0 },
+	{ "hard_wait", 0, 0, 0 },
+	{ "hard_post_wait_bp_restore", 0, 0, 0 },
 };
-static RzCiDebugProfile ci_debug_profiler = { -1, "debug", ci_debug_buckets, 5 };
+static RzCiDebugProfile ci_debug_profiler = { -1, "debug", ci_debug_buckets, 9 };
 static void ci_debug_profile_dump(void) {
 	rz_ci_debug_profile_dump(&ci_debug_profiler);
 }
@@ -940,7 +947,10 @@ RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
 	/* only handle recoils when not already in recoil mode. */
 	if (dbg->recoil_mode == RZ_DBG_RECOIL_NONE) {
 		/* handle the stage-2 of breakpoints */
-		if (!rz_debug_recoil(dbg, RZ_DBG_RECOIL_STEP)) {
+		uint64_t ci_recoil = CI_DEBUG_START();
+		bool recoil_ok = rz_debug_recoil(dbg, RZ_DBG_RECOIL_STEP);
+		CI_DEBUG_END(CI_HARD_RECOIL, ci_recoil);
+		if (!recoil_ok) {
 			return false;
 		}
 
@@ -951,7 +961,10 @@ RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
 		}
 	}
 
-	if (!dbg->cur->step(dbg)) {
+	uint64_t ci_native = CI_DEBUG_START();
+	int native_step_ok = dbg->cur->step(dbg);
+	CI_DEBUG_END(CI_HARD_NATIVE_STEP, ci_native);
+	if (!native_step_ok) {
 		return false;
 	}
 
@@ -961,7 +974,9 @@ RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
 	bool prev_continue = dbg->continue_all_threads;
 	dbg->continue_all_threads = false;
 #endif
+	uint64_t ci_wait = CI_DEBUG_START();
 	reason = rz_debug_wait(dbg, pb);
+	CI_DEBUG_END(CI_HARD_WAIT, ci_wait);
 #if __linux__
 	dbg->continue_all_threads = prev_continue;
 #endif
@@ -973,7 +988,9 @@ RZ_API int rz_debug_step_hard(RzDebug *dbg, RzBreakpointItem **pb) {
 	if (reason != RZ_DEBUG_REASON_BREAKPOINT &&
 		reason != RZ_DEBUG_REASON_COND &&
 		reason != RZ_DEBUG_REASON_TRACEPOINT) {
+		uint64_t ci_postwait = CI_DEBUG_START();
 		rz_bp_restore(dbg->bp, false);
+		CI_DEBUG_END(CI_HARD_POST_WAIT, ci_postwait);
 	}
 	/* TODO: handle better */
 	if (reason == RZ_DEBUG_REASON_ERROR) {
