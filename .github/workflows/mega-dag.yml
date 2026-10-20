@@ -15,6 +15,7 @@ on:
   pull_request:
     branches:
       - ci/mega-dag-heavy-fastlane
+      - ci/mega-dag-pr-cache-inheritance
 
 permissions:
   contents: read
@@ -57,6 +58,8 @@ jobs:
           assert set(jobs['archos-heavy']['needs']) == {'build-gcc', 'prepare-fixtures'}
           assert Path('.github/ci/asm-duration-weights.json').is_file()
           assert Path('.github/scripts/mega_dag_shards.py').is_file()
+          assert Path('librz/debug/ci_debug_profile.h').is_file()
+          assert Path('.github/scripts/ci_debug_profile_report.py').is_file()
           state = {}
           def visit(job):
               assert job in jobs, f'missing job {job}'
@@ -78,6 +81,7 @@ jobs:
           PY
           python3 .github/scripts/mega_dag_shards.py --self-test
           python3 .github/scripts/ci_process_sampler.py --self-test
+          python3 .github/scripts/ci_debug_profile_report.py --self-test
           python3 -m pip install --user PyYAML
           python3 .github/scripts/ci_critical_path.py --self-test
 
@@ -357,9 +361,35 @@ jobs:
           test -f "$heavy"
           rz-test -n "$heavy" | tee inventory-archos-heavy.txt
           awk '/^Loaded [0-9]+ tests[.]$/ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' inventory-archos-heavy.txt
+          # Opt-in function-level timings for this diagnostic Job only.
+          export RZ_CI_DEBUG_PROFILE_PATH="$RUNNER_TEMP/rzci-prof"
           python3 ../.github/scripts/ci_process_sampler.py \
             --output diagnostics-archos-heavy.json --interval 5 -- \
             rz-test -j "$(nproc)" -L -o results-archos-heavy.json "$heavy"
+      - name: Aggregate debugger function timings
+        if: always()
+        run: |
+          mkdir -p test/debug-func-profile
+          shopt -s nullglob
+          csvs=("$RUNNER_TEMP"/rzci-prof.*.*.csv)
+          test "${#csvs[@]}" -gt 0
+          cp "${csvs[@]}" test/debug-func-profile/
+          python3 .github/scripts/ci_debug_profile_report.py \
+            --directory test/debug-func-profile \
+            --json-output test/debug-function-summary.json \
+            --markdown-output test/debug-function-summary.md
+          cat test/debug-function-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload debugger function timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debugger-function-timings
+          path: |
+            test/debug-func-profile/
+            test/debug-function-summary.json
+            test/debug-function-summary.md
+          if-no-files-found: error
+          retention-days: 14
       - name: Persist heavy shard result
         if: always()
         uses: actions/upload-artifact@v7
