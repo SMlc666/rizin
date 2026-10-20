@@ -12,6 +12,8 @@ from pathlib import Path
 EXPECTED = {
     "trace_before", "step_backend", "trace_after",
     "reverse_breakpoint_scan", "goto_state_restore",
+    "hard_recoil", "hard_native_step", "hard_wait",
+    "hard_post_wait_bp_restore",
     "restore_registers", "sync_registers",
     "restore_snapshot_memory", "restore_memory_changes",
 }
@@ -44,7 +46,8 @@ def summarize(path: Path) -> tuple[dict, str]:
         observations += 1
     if not observations:
         raise ValueError("No timing records")
-    for label in ("trace_before", "trace_after", "step_backend"):
+    for label in ("trace_before", "trace_after", "step_backend",
+                  "hard_native_step", "hard_wait"):
         if stages[label]["calls"] == 0:
             raise ValueError(f"Mandatory trace-stage counter not observed: {label}")
 
@@ -84,10 +87,11 @@ def self_test():
         p.write_text("\n".join(json.dumps({
             "schema": 1, "pid": 21, "source": "debug", "stage": label,
             "calls": 2, "total_ns": 2000000, "max_ns": 1000000
-        }) for label in ("trace_before", "trace_after", "step_backend")) + "\n")
+        }) for label in ("trace_before", "trace_after", "step_backend",
+                         "hard_native_step", "hard_wait")) + "\n")
         data, markdown = summarize(p)
         assert data["stages"]["trace_before"]["calls"] == 2
-        assert len(data["sorted_stages"]) == 3
+        assert len(data["sorted_stages"]) == 5
         assert "0.002s" in markdown
         p.write_text("")
         try:
