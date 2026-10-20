@@ -16,6 +16,7 @@ on:
     branches:
       - ci/mega-dag-heavy-fastlane
       - ci/mega-dag-pr-cache-inheritance
+      - ci/mega-dag-debug-hotspot-profile
 
 permissions:
   contents: read
