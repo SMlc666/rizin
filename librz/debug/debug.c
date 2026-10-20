@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #include <rz_debug.h>
+#define RZ_CI_PROFILE_MODULE "debug"
+#include "ci_profile.h"
 #include <rz_drx.h>
 #include <rz_core.h>
 #include <rz_windows.h>
@@ -996,23 +998,31 @@ RZ_API int rz_debug_step(RzDebug *dbg, int steps) {
 			dbg->session->cnum++;
 			dbg->session->maxcnum++;
 			dbg->session->bp = 0;
-			if (!rz_debug_trace_ins_before(dbg)) {
+			ut64 t = rz_ci_profile_start();
+			bool trace_ok = rz_debug_trace_ins_before(dbg);
+			rz_ci_profile_end(0, "trace_before", t);
+			if (!trace_ok) {
 				RZ_LOG_ERROR("debug: trace insert before has failed\n");
 			}
 		}
 
+		ut64 t = rz_ci_profile_start();
 		if (dbg->swstep) {
 			ret = rz_debug_step_soft(dbg);
 		} else {
 			ret = rz_debug_step_hard(dbg, &bp);
 		}
+		rz_ci_profile_end(1, "actual_step", t);
 		if (!ret) {
 			RZ_LOG_ERROR("debug: failed to step\n");
 			return steps_taken;
 		}
 
 		if (dbg->session && dbg->recoil_mode == RZ_DBG_RECOIL_NONE) {
-			if (!rz_debug_trace_ins_after(dbg)) {
+			ut64 t = rz_ci_profile_start();
+			bool trace_ok = rz_debug_trace_ins_after(dbg);
+			rz_ci_profile_end(2, "trace_after", t);
+			if (!trace_ok) {
 				RZ_LOG_ERROR("debug: trace insert after has failed\n");
 			}
 			dbg->session->reasontype = dbg->reason.type;

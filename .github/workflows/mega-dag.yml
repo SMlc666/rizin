@@ -14,7 +14,7 @@ on:
   # A normal push on a sibling feature branch cannot do so.
   pull_request:
     branches:
-      - ci/mega-dag-heavy-fastlane
+      - ci/mega-dag-pr-cache-inheritance
 
 permissions:
   contents: read
@@ -353,6 +353,8 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/lib/x86_64-linux-gnu:$HOME/lib:$HOME/lib64:${LD_LIBRARY_PATH:-}"
           export PKG_CONFIG_PATH="$HOME/lib/pkgconfig:$HOME/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
           cd test
+          mkdir -p debug-ci-profile
+          export RZ_DEBUG_CI_PROFILE_DIR="$PWD/debug-ci-profile"
           heavy="db/archos/linux-x64/dbg_cont_back"
           test -f "$heavy"
           rz-test -n "$heavy" | tee inventory-archos-heavy.txt
@@ -360,6 +362,8 @@ jobs:
           python3 ../.github/scripts/ci_process_sampler.py \
             --output diagnostics-archos-heavy.json --interval 5 -- \
             rz-test -j "$(nproc)" -L -o results-archos-heavy.json "$heavy"
+          # A passing test without any timing data is not a passing probe.
+          find debug-ci-profile -name 'rizin-*.tsv' -size +0c | grep -q .
       - name: Persist heavy shard result
         if: always()
         uses: actions/upload-artifact@v7
@@ -376,6 +380,14 @@ jobs:
         with:
           name: debugger-process-diagnostics
           path: test/diagnostics-archos-heavy.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Persist native debugger hotspot profiles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debugger-hotpath-profile
+          path: test/debug-ci-profile/
           if-no-files-found: error
           retention-days: 14
 

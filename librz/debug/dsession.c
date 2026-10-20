@@ -3,6 +3,8 @@
 
 #include <rz_debug.h>
 #include <rz_util/rz_json.h>
+#define RZ_CI_PROFILE_MODULE "dsession"
+#include "ci_profile.h"
 
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_MEM(x, y)   ((x) >= ((RzDebugChangeMem *)y)->cnum ? 1 : -1)
@@ -156,8 +158,12 @@ static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
 }
 
 static void _restore_memory(RzDebug *dbg, ut32 cnum) {
+	ut64 t = rz_ci_profile_start();
 	_set_initial_memory(dbg);
+	rz_ci_profile_end(1, "memory_snapshot_restore", t);
+	t = rz_ci_profile_start();
 	ht_up_foreach(dbg->session->memory, _restore_memory_cb, dbg);
+	rz_ci_profile_end(2, "memory_changes_restore", t);
 }
 
 static RzDebugCheckpoint *_get_checkpoint_before(RzDebugSession *session, ut32 cnum) {
@@ -175,8 +181,10 @@ RZ_API void rz_debug_session_restore_reg_mem(RzDebug *dbg, ut32 cnum) {
 	dbg->session->cur_chkpt = _get_checkpoint_before(dbg->session, cnum);
 
 	// Restore registers
+	ut64 t = rz_ci_profile_start();
 	_restore_registers(dbg, cnum);
 	rz_debug_reg_sync(dbg, RZ_REG_TYPE_ANY, true);
+	rz_ci_profile_end(0, "registers_restore", t);
 
 	// Restore memory
 	_restore_memory(dbg, cnum);
@@ -216,6 +224,7 @@ RZ_API void rz_debug_session_list_memory(RzDebug *dbg) {
 }
 
 RZ_API bool rz_debug_session_add_reg_change(RzDebugSession *session, int arena, ut64 offset, ut64 data) {
+	rz_ci_profile_count(3, "register_change_record");
 	RzVector *vreg = ht_up_find(session->registers, offset | (arena << 16), NULL);
 	if (!vreg) {
 		vreg = rz_vector_new(sizeof(RzDebugChangeReg), NULL, NULL);
@@ -231,6 +240,7 @@ RZ_API bool rz_debug_session_add_reg_change(RzDebugSession *session, int arena, 
 }
 
 RZ_API bool rz_debug_session_add_mem_change(RzDebugSession *session, ut64 addr, ut8 data) {
+	rz_ci_profile_count(4, "memory_byte_change_record");
 	RzVector *vmem = ht_up_find(session->memory, addr, NULL);
 	if (!vmem) {
 		vmem = rz_vector_new(sizeof(RzDebugChangeMem), NULL, NULL);
