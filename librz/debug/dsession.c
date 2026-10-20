@@ -4,6 +4,15 @@
 #include <rz_debug.h>
 #include <rz_util/rz_json.h>
 
+#define RZ_CI_PROFILE_UNIT "dsession"
+#define RZ_CI_PROFILE_PHASE_NAMES { "checkpoint_capture", "restore_registers", "restore_register_sync", "restore_snapshots", "restore_changed_memory", "restore_all", "snapshot_bytes", "changed_byte_writes", "recorded_mem_bytes", "recorded_reg_changes" }
+#include "ci_profile.h"
+enum {
+	CI_CHECKPOINT, CI_REGISTERS, CI_REG_SYNC, CI_SNAPSHOTS,
+	CI_CHANGED_MEMORY, CI_RESTORE_ALL, CI_SNAPSHOT_BYTES,
+	CI_BYTE_WRITES, CI_RECORD_MEM, CI_RECORD_REG
+}
+
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_MEM(x, y)   ((x) >= ((RzDebugChangeMem *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_CHKPT(x, y) ((x) >= ((RzDebugCheckpoint *)y)->cnum ? 1 : -1)
@@ -51,7 +60,7 @@ RZ_API RzDebugSession *rz_debug_session_new(void) {
 	return session;
 }
 
-RZ_API bool rz_debug_add_checkpoint(RzDebug *dbg) {
+static bool rz_debug_add_checkpoint_impl(RzDebug *dbg) {
 	rz_return_val_if_fail(dbg->session, false);
 	size_t i;
 	RzDebugCheckpoint checkpoint = { 0 };
@@ -97,6 +106,13 @@ RZ_API bool rz_debug_add_checkpoint(RzDebug *dbg) {
 	return true;
 }
 
+RZ_API bool rz_debug_add_checkpoint(RzDebug *dbg) {
+	const ut64 started = rz_ci_profile_begin();
+	const bool ok = rz_debug_add_checkpoint_impl(dbg);
+	rz_ci_profile_end(CI_CHECKPOINT, started);
+	return ok;
+}
+
 static void _set_initial_registers(RzDebug *dbg) {
 	size_t i;
 	for (i = 0; i < RZ_REG_TYPE_LAST; i++) {
@@ -137,6 +153,7 @@ static void _set_initial_memory(RzDebug *dbg) {
 	RzDebugSnap *snap;
 	rz_list_foreach (dbg->session->cur_chkpt->snaps, iter, snap) {
 		dbg->iob.write_at(dbg->iob.io, snap->addr, snap->data, snap->size);
+		rz_ci_profile_count(CI_SNAPSHOT_BYTES, snap->size);
 	}
 }
 
@@ -150,14 +167,19 @@ static bool _restore_memory_cb(void *user, const ut64 key, const void *value) {
 		RzDebugChangeMem *mem = rz_vector_index_ptr(vmem, index - 1);
 		if (mem->cnum > dbg->session->cur_chkpt->cnum) {
 			dbg->iob.write_at(dbg->iob.io, key, &mem->data, 1);
+			rz_ci_profile_count(CI_BYTE_WRITES, 1);
 		}
 	}
 	return true;
 }
 
 static void _restore_memory(RzDebug *dbg, ut32 cnum) {
+	const ut64 snapshot_start = rz_ci_profile_begin();
 	_set_initial_memory(dbg);
+	rz_ci_profile_end(CI_SNAPSHOTS, snapshot_start);
+	const ut64 changed_start = rz_ci_profile_begin();
 	ht_up_foreach(dbg->session->memory, _restore_memory_cb, dbg);
+	rz_ci_profile_end(CI_CHANGED_MEMORY, changed_start);
 }
 
 static RzDebugCheckpoint *_get_checkpoint_before(RzDebugSession *session, ut32 cnum) {
@@ -171,15 +193,21 @@ static RzDebugCheckpoint *_get_checkpoint_before(RzDebugSession *session, ut32 c
 }
 
 RZ_API void rz_debug_session_restore_reg_mem(RzDebug *dbg, ut32 cnum) {
+	const ut64 total_start = rz_ci_profile_begin();
 	// Set checkpoint for initial registers and memory
 	dbg->session->cur_chkpt = _get_checkpoint_before(dbg->session, cnum);
 
 	// Restore registers
+	const ut64 regs_start = rz_ci_profile_begin();
 	_restore_registers(dbg, cnum);
+	rz_ci_profile_end(CI_REGISTERS, regs_start);
+	const ut64 sync_start = rz_ci_profile_begin();
 	rz_debug_reg_sync(dbg, RZ_REG_TYPE_ANY, true);
+	rz_ci_profile_end(CI_REG_SYNC, sync_start);
 
 	// Restore memory
 	_restore_memory(dbg, cnum);
+	rz_ci_profile_end(CI_RESTORE_ALL, total_start);
 }
 
 RZ_API void rz_debug_session_list_memory(RzDebug *dbg) {
@@ -227,6 +255,7 @@ RZ_API bool rz_debug_session_add_reg_change(RzDebugSession *session, int arena, 
 	}
 	RzDebugChangeReg reg = { session->cnum, data };
 	rz_vector_push(vreg, &reg);
+	rz_ci_profile_count(CI_RECORD_REG, 1);
 	return true;
 }
 
@@ -242,6 +271,7 @@ RZ_API bool rz_debug_session_add_mem_change(RzDebugSession *session, ut64 addr, 
 	}
 	RzDebugChangeMem mem = { session->cnum, data };
 	rz_vector_push(vmem, &mem);
+	rz_ci_profile_count(CI_RECORD_MEM, 1);
 	return true;
 }
 
