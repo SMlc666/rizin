@@ -9,7 +9,7 @@
 #define RZ_CI_PROFILE_UNIT "debug"
 #define RZ_CI_PROFILE_PHASE_NAMES { "debug_step", "native_step", "continue_back" }
 #include "ci_profile.h"
-enum { CI_STEP, CI_NATIVE_STEP, CI_BACK }
+enum { CI_STEP, CI_NATIVE_STEP, CI_BACK };
 #include <rz_drx.h>
 #include <rz_core.h>
 #include <rz_windows.h>
