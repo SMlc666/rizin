@@ -10,11 +10,13 @@ on:
       - ci/mega-dag-observability
       - ci/mega-dag-heavy-fastlane
   workflow_dispatch:
+  # CI profile is opt-in for the dedicated heavy debugger shard only.
   # PR merges may restore compiler caches from their base branch.
   # A normal push on a sibling feature branch cannot do so.
   pull_request:
     branches:
       - ci/mega-dag-heavy-fastlane
+      - ci/mega-dag-pr-cache-inheritance
 
 permissions:
   contents: read
@@ -80,6 +82,10 @@ jobs:
           python3 .github/scripts/ci_process_sampler.py --self-test
           python3 -m pip install --user PyYAML
           python3 .github/scripts/ci_critical_path.py --self-test
+          python3 .github/scripts/ci_debug_profile_summary.py --self-test
+          assert_profile () { test -f "$1"; }
+          assert_profile librz/debug/ci_profile.h
+          assert_profile .github/scripts/ci_debug_profile_summary.py
 
   plan-regressions:
     name: "05 / Plan historical-duration regression DAG"
@@ -357,9 +363,28 @@ jobs:
           test -f "$heavy"
           rz-test -n "$heavy" | tee inventory-archos-heavy.txt
           awk '/^Loaded [0-9]+ tests[.]$/ { if ($2 + 0 > 0) ok=1 } END { exit !ok }' inventory-archos-heavy.txt
+          # Only this job enables the C timing instrumentation. The log
+          # path must be absolute, because rz-test launches child processes.
+          export RZ_DEBUG_CI_PROFILE_LOG="$PWD/debugger-function-timing.tsv"
           python3 ../.github/scripts/ci_process_sampler.py \
             --output diagnostics-archos-heavy.json --interval 5 -- \
             rz-test -j "$(nproc)" -L -o results-archos-heavy.json "$heavy"
+      - name: Parse debugger function-level timing
+        run: |
+          python3 .github/scripts/ci_debug_profile_summary.py --self-test
+          python3 .github/scripts/ci_debug_profile_summary.py \
+            --input test/debugger-function-timing.tsv \
+            --output test/debugger-function-timing.json
+      - name: Persist debugger function-level timing
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debugger-function-timing
+          path: |
+            test/debugger-function-timing.tsv
+            test/debugger-function-timing.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Persist heavy shard result
         if: always()
         uses: actions/upload-artifact@v7
