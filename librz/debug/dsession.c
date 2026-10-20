@@ -11,7 +11,7 @@ enum {
 	CI_CHECKPOINT, CI_REGISTERS, CI_REG_SYNC, CI_SNAPSHOTS,
 	CI_CHANGED_MEMORY, CI_RESTORE_ALL, CI_SNAPSHOT_BYTES,
 	CI_BYTE_WRITES, CI_RECORD_MEM, CI_RECORD_REG
-}
+};
 
 #define CMP_CNUM_REG(x, y)   ((x) >= ((RzDebugChangeReg *)y)->cnum ? 1 : -1)
 #define CMP_CNUM_MEM(x, y)   ((x) >= ((RzDebugChangeMem *)y)->cnum ? 1 : -1)
