@@ -6,7 +6,7 @@
 #define RZ_CI_PROFILE_UNIT "trace"
 #define RZ_CI_PROFILE_PHASE_NAMES { "instruction_before", "instruction_after" }
 #include "ci_profile.h"
-enum { CI_TRACE_BEFORE, CI_TRACE_AFTER }
+enum { CI_TRACE_BEFORE, CI_TRACE_AFTER };
 
 /* Old debug trace implementation */
 RZ_API RzDebugTrace *rz_debug_trace_new(void) {
