@@ -15,6 +15,7 @@
 #if defined(__linux__) && defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 typedef struct {
