@@ -1,0 +1,10 @@
+# Interactive development only; GitHub Actions remains the CI source of truth.
+$:
+  vscode:
+    - name: rizin-dev
+      runner:
+        cpus: 8
+      docker:
+        build: .ide/Dockerfile
+      services:
+        - vscode
