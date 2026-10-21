@@ -1,0 +1,30 @@
+name: Sync GitHub to CNB
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-github-to-cnb
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Sync branches and tags to CNB
+        uses: docker://tencentcom/git-sync
+        env:
+          PLUGIN_TARGET_URL: https://cnb.cool/urprotect-2026/rizin.git
+          PLUGIN_AUTH_TYPE: https
+          PLUGIN_USERNAME: cnb
+          PLUGIN_PASSWORD: ${{ secrets.CNB_TOKEN }}
+          PLUGIN_FORCE: "true"
+          PLUGIN_PUSH_TAGS: "true"
