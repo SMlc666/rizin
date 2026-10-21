@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 RizinOrg <info@rizin.re>
+# SPDX-License-Identifier: LGPL-3.0-only
 # Keep CNB's VS Code development environment and add Rizin's native build tools.
 FROM cnbcool/default-dev-env:latest
 
