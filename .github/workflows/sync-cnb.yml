@@ -62,7 +62,16 @@ jobs:
             exit 1
           fi
 
-          printf 'machine cnb.cool login cnb password %s\n' "$CNB_TOKEN" > "$HOME/.netrc"
-          chmod 600 "$HOME/.netrc"
-          trap 'rm -f "$HOME/.netrc"' EXIT
-          git push https://cnb.cool/urprotect-2026/rizin.git --delete "$CNB_BRANCH"
+          askpass="$RUNNER_TEMP/cnb-askpass.sh"
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' cnb ;;
+            *Password*) printf '%s\n' "$CNB_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          trap 'rm -f "$askpass"' EXIT
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git push https://cnb.cool/urprotect-2026/rizin.git --delete "$CNB_BRANCH"
