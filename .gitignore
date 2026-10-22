@@ -94,6 +94,8 @@ librz/flag/d/tags.rz
 .idea/
 # VSCode
 .vscode/
+# Pi agent local settings
+.pi/
 CMakeLists.txt
 *.cmake
 cmake-build-*
