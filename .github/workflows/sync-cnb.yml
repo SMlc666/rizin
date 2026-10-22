@@ -3,6 +3,11 @@ name: Sync GitHub to CNB
 on:
   push:
   workflow_dispatch:
+    inputs:
+      delete_cnb_branch:
+        description: Delete a branch from CNB only when it no longer exists on GitHub
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,6 +18,9 @@ concurrency:
 
 jobs:
   sync:
+    if: >-
+      ${{ !(github.event_name == 'push' && github.event.deleted == true && github.ref_type == 'branch')
+          && !(github.event_name == 'workflow_dispatch' && inputs.delete_cnb_branch != '') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -28,3 +36,42 @@ jobs:
           PLUGIN_PASSWORD: ${{ secrets.CNB_TOKEN }}
           PLUGIN_FORCE: "true"
           PLUGIN_PUSH_TAGS: "true"
+
+  delete-cnb-branch:
+    if: >-
+      ${{ (github.event_name == 'push' && github.event.deleted == true && github.ref_type == 'branch')
+          || (github.event_name == 'workflow_dispatch' && inputs.delete_cnb_branch != '') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete branch from CNB if it is absent from GitHub
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_BRANCH: ${{ github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name || inputs.delete_cnb_branch }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$CNB_TOKEN" ]]; then
+            echo "::error::CNB_TOKEN secret is not configured"
+            exit 1
+          fi
+
+          git check-ref-format --branch "$CNB_BRANCH" >/dev/null
+          github_ref=$(git ls-remote --heads "https://github.com/${GITHUB_REPOSITORY}.git" "refs/heads/${CNB_BRANCH}")
+          if [[ -n "$github_ref" ]]; then
+            echo "::error::Refusing to delete '$CNB_BRANCH'; it still exists on GitHub"
+            exit 1
+          fi
+
+          askpass="$RUNNER_TEMP/cnb-askpass.sh"
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' cnb ;;
+            *Password*) printf '%s\n' "$CNB_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          trap 'rm -f "$askpass"' EXIT
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git push https://cnb.cool/urprotect-2026/rizin.git --delete "$CNB_BRANCH"
