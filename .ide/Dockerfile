@@ -5,6 +5,10 @@ FROM cnbcool/default-dev-env:latest
 
 USER root
 
+# The base image's Python is uv-managed; keep added Python tools in an isolated venv.
+ENV VIRTUAL_ENV=/opt/rizin-venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -12,8 +16,9 @@ RUN apt-get update \
         libcapstone-dev \
         pkg-config \
     && rm -rf /var/lib/apt/lists/* \
-    && uv pip install --system --python /usr/local/bin/python3 \
+    && uv venv --python /usr/local/bin/python3 "$VIRTUAL_ENV" \
+    && uv pip install --python "$VIRTUAL_ENV/bin/python" \
         meson ninja PyYAML psutil requests \
     && meson --version \
     && ninja --version \
-    && python3 -c 'import yaml, psutil, requests'
+    && python -c 'import yaml, psutil, requests'
