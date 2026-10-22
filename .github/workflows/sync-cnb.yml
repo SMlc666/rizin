@@ -43,6 +43,10 @@ jobs:
           || (github.event_name == 'workflow_dispatch' && inputs.delete_cnb_branch != '') }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
       - name: Delete branch from CNB if it is absent from GitHub
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
